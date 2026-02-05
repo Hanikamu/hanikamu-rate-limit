@@ -17,6 +17,7 @@ Distributed, Redis-backed rate limiting with a sliding window algorithm. Works a
 
 ## Why Hanikamu::RateLimit?
 
+- **Use case**: You run 40 Sidekiq workers that all hit the same external marketing API capped at 20 requests per second. Without coordination, they’ll burst and trigger throttling. With a shared limit, every worker routes through the same Redis-backed window so aggregate throughput stays at 20 req/s across the whole fleet.
 - **Distributed by design**: Limits are enforced through Redis so multiple app instances share a single limit.
 - **Sliding window**: Limits are based on the most recent interval window, not fixed buckets.
 - **Backoff with polling**: When a limit is hit, the limiter sleeps in short intervals until a slot opens.
