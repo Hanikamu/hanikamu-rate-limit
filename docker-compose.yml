@@ -1,0 +1,22 @@
+version: "3"
+networks:
+  docker-compose-example-tier:
+    driver: bridge
+services:
+  redis:
+    image: redis:7-alpine
+    networks:
+      - docker-compose-example-tier
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      HISTFILE: /app/tmp/ash_history
+      REDIS_URL: redis://redis:6379/15
+    volumes:
+      - .:/app
+    networks:
+      - docker-compose-example-tier
+    depends_on:
+      - redis

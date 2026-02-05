@@ -1,0 +1,105 @@
+plugins:
+  - rubocop-rspec
+  - rubocop-performance
+
+AllCops:
+  NewCops: enable
+  TargetRubyVersion: 4.0
+  SuggestExtensions: false
+  Exclude:
+    - "vendor/**/*"
+    - "bin/*"
+    - "node_modules/**/*"
+    - "tmp/**/*"
+    - "starting_point/**/*"
+  UseCache: false
+  DisplayCopNames: true
+  DisplayStyleGuide: true
+
+Style/FrozenStringLiteralComment:
+  Enabled: true
+  Include:
+    - "lib/**/*"
+    - "spec/**/*"
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes
+
+Style/Documentation:
+  Enabled: false
+
+Layout/EmptyLinesAroundBlockBody:
+  Enabled: false
+
+Layout/EmptyLineBetweenDefs:
+  Enabled: true
+
+Layout/IndentationConsistency:
+  EnforcedStyle: normal
+
+Layout/EmptyLines:
+  Enabled: true
+
+Layout/MultilineMethodCallIndentation:
+  EnforcedStyle: indented
+
+Style/MutableConstant:
+  Enabled: true
+
+Lint/RescueException:
+  Enabled: true
+
+Lint/RescueType:
+  Enabled: true
+
+Lint/Debugger:
+  Enabled: true
+
+RSpec/MultipleMemoizedHelpers:
+  Max: 30
+
+RSpec/ExampleLength:
+  Max: 25
+
+RSpec/MultipleExpectations:
+  Max: 5
+
+RSpec/NamedSubject:
+  Enabled: false
+
+RSpec/VerifiedDoubles:
+  Enabled: false
+
+RSpec/MessageSpies:
+  Enabled: false
+
+RSpec/LeakyConstantDeclaration:
+  Enabled: false
+
+RSpec/RemoveConst:
+  Enabled: false
+
+RSpec/NestedGroups:
+  Max: 5
+
+Naming/FileName:
+  Exclude:
+    - ./lib/hanikamu-rate-limit.rb
+
+Lint/ConstantDefinitionInBlock:
+  Exclude:
+    - 'spec/**/*'
+
+Metrics/BlockLength:
+  Exclude:
+    - 'spec/**/*'
+    - '*.gemspec'
+
+Metrics/MethodLength:
+  Max: 18
+
+Metrics/ClassLength:
+  Max: 110
