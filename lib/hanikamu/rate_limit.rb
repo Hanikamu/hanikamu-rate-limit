@@ -3,9 +3,11 @@
 require "dry/configurable"
 require "dry/container"
 require "hanikamu/rate_limit/errors"
+require "hanikamu/rate_limit/headers"
 require "hanikamu/rate_limit/mixin"
 require "hanikamu/rate_limit/rate_queue"
 require "hanikamu/rate_limit/version"
+require "hanikamu/rate_limit/engine" if defined?(Rails)
 
 module Hanikamu
   module RateLimit
@@ -14,6 +16,9 @@ module Hanikamu
     setting :redis_url
     setting :max_wait_time, default: 2.0
     setting :check_interval, default: 0.5
+    setting :rate_limit_headers
+    setting :observations_key_prefix, default: "hanikamu:rate_limit:observed"
+    setting :rate_limits_basic_auth
 
     class << self
       def configure(&block)
@@ -56,6 +61,7 @@ module Hanikamu
         registry_options = { rate: rate, interval: interval, key_prefix: key_prefix }
         registry_options[:check_interval] = options[:check_interval] unless options[:check_interval].nil?
         registry_options[:max_wait_time] = options[:max_wait_time] unless options[:max_wait_time].nil?
+        registry_options[:headers] = options[:headers] unless options[:headers].nil?
         registry_options
       end
     end

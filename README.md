@@ -78,12 +78,16 @@ Available settings:
 - `redis_url`: Redis connection URL (required).
 - `check_interval`: default sleep interval between retries (default: 0.5 seconds).
 - `max_wait_time`: max time to wait before raising (default: 2.0 seconds).
+- `rate_limit_headers`: list of headers to capture from responses. If unset, all headers are captured.
+- `observations_key_prefix`: Redis key prefix for observed headers (default: `hanikamu:rate_limit:observed`).
+- `rate_limits_basic_auth`: optional `{ username:, password: }` to protect the Rails view.
 - `register_limit`: define a named limit shared across classes.
 
 Registered limit options:
 
 - `rate` and `interval` (required).
 - `check_interval`, `max_wait_time` (optional).
+- `headers` (optional) to override `rate_limit_headers` per limit.
 - `key_prefix` (optional) to force a shared Redis key; defaults to a registry-based prefix.
 
 ## Usage
@@ -92,6 +96,12 @@ Optional per-method overrides:
 
 ```ruby
 limit_method :execute, rate: 5, interval: 1.0, check_interval: 0.1, max_wait_time: 3.0
+```
+
+Capture upstream rate-limit headers:
+
+```ruby
+limit_method :execute, rate: 5, interval: 1.0, headers: ["RateLimit-Limit", "RateLimit-Remaining"]
 ```
 
 Use a registered limit shared across classes:
@@ -118,6 +128,43 @@ Reset method is generated automatically:
 
 ```ruby
 MyService.reset_execute_limit!
+```
+
+## Observed rate-limit headers
+
+Captured headers are stored in Redis so you can compare configured limits with what the upstream returns.
+
+### Rails mountable view
+
+Mount the engine in your Rails app:
+
+```ruby
+# config/routes.rb
+mount Hanikamu::RateLimit::Engine => "/rate_limits"
+```
+
+Then visit `/rate_limits` to get JSON output with captured keys and values.
+
+### Manual capture
+
+If you want to capture headers outside the limiter, you can call:
+
+```ruby
+Hanikamu::RateLimit::Headers.capture!(
+  headers: response.headers,
+  registry: :external_api
+)
+```
+
+To protect the view with basic auth:
+
+```ruby
+Hanikamu::RateLimit.configure do |config|
+  config.rate_limits_basic_auth = {
+    username: ENV.fetch("RATE_LIMITS_USER"),
+    password: ENV.fetch("RATE_LIMITS_PASS")
+  }
+end
 ```
 
 ## Error Handling
