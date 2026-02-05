@@ -96,7 +96,7 @@ limit_method :execute, rate: 5, interval: 1.0, check_interval: 0.1, max_wait_tim
 Use a registered limit shared across classes:
 
 ```ruby
-class SaxoClient
+class ExternalApiClient
   extend Hanikamu::RateLimit::Mixin
 
   limit_with :execute, registry: :external_api
