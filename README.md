@@ -118,6 +118,44 @@ Reset method is generated automatically:
 
 ```ruby
 MyService.reset_execute_limit!
+
+### Class methods
+
+To rate limit class methods, apply the mixin to the singleton class:
+
+```ruby
+class MyService
+  class << self
+    extend Hanikamu::RateLimit::Mixin
+
+    limit_method :call, rate: 5, interval: 1.0
+
+    def call
+      # work
+    end
+  end
+end
+```
+
+You can also use registered limits:
+
+```ruby
+Hanikamu::RateLimit.configure do |config|
+  config.register_limit(:external_api, rate: 5, interval: 1.0)
+end
+
+class MyService
+  class << self
+    extend Hanikamu::RateLimit::Mixin
+
+    limit_with :call, registry: :external_api
+
+    def call
+      # work
+    end
+  end
+end
+```
 ```
 
 ## Error Handling
