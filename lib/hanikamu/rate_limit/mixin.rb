@@ -13,7 +13,7 @@ module Hanikamu
         merged = registry_config.merge(overrides.compact)
         rate = merged.fetch(:rate)
         interval = merged.fetch(:interval)
-        options = merged.slice(:check_interval, :max_wait_time, :key_prefix)
+        options = merged.slice(:check_interval, :max_wait_time, :key_prefix, :headers)
         queue = build_queue(rate, interval, method, options, &)
         install_rate_limited_method(method, queue)
       end
@@ -39,7 +39,9 @@ module Hanikamu
 
           define_method(method) do |*args, **options, &blk|
             rate_queue.shift
-            options.empty? ? super(*args, &blk) : super(*args, **options, &blk)
+            result = options.empty? ? super(*args, &blk) : super(*args, **options, &blk)
+            rate_queue.record(result)
+            result
           end
         end
 
