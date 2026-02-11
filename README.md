@@ -32,7 +32,7 @@ Requires Ruby 4.0 or later.
 
 ```ruby
 # Gemfile
-gem "hanikamu-rate-limit", "~> 0.1.0"
+gem "hanikamu-rate-limit", "~> 0.2.0"
 ```
 
 ```bash
@@ -84,7 +84,8 @@ Registered limit options:
 
 - `rate` and `interval` (required).
 - `check_interval`, `max_wait_time` (optional).
-- `key_prefix` (optional) to force a shared Redis key; defaults to a registry-based prefix.
+
+`key_prefix` is no longer configurable for registered limits; registry keys are derived from the registry name.
 
 ## Usage
 
@@ -94,13 +95,21 @@ Optional per-method overrides:
 limit_method :execute, rate: 5, interval: 1.0, check_interval: 0.1, max_wait_time: 3.0
 ```
 
+Optional block called each time the limiter sleeps:
+
+```ruby
+limit_method :execute, rate: 5, interval: 1.0 do |sleep_time|
+  Rails.logger.info("Rate limited, sleeping #{sleep_time}s")
+end
+```
+
 Use a registered limit shared across classes:
 
 ```ruby
 class ExternalApiClient
   extend Hanikamu::RateLimit::Mixin
 
-  limit_with :execute, registry: :external_api
+  limit_method :execute, registry: :external_api
 
   def execute
     # work
@@ -108,16 +117,62 @@ class ExternalApiClient
 end
 ```
 
+You must provide either `registry:` or `rate:` — combining them raises `ArgumentError`.
+When `registry:` is used, it must be the only limit-related option (no `rate:`, `interval:`, `check_interval:`, or `max_wait_time:` overrides).
+
 Registry precedence (highest to lowest):
 
-1. Per-method overrides passed to `limit_with`.
-2. Registered limit options.
-3. Global defaults from `Hanikamu::RateLimit.configure`.
+1. Registered limit options.
+2. Global defaults from `Hanikamu::RateLimit.configure`.
 
 Reset method is generated automatically:
 
 ```ruby
 MyService.reset_execute_limit!
+```
+
+### Dynamic overrides
+
+Dynamic overrides only apply to **registry-based limits** (methods using `limit_method` with `registry:`). Methods limited with inline `rate:` / `interval:` options are not affected.
+
+When an external API returns rate-limit headers (e.g. `X-RateLimit-Remaining`, `X-RateLimit-Reset`), you can temporarily override a registered limit to match the real window:
+
+```ruby
+Hanikamu::RateLimit.register_temporary_limit(:external_api, remaining: 175, reset: 60)
+```
+
+This stores a Redis counter with `remaining` requests allowed and a TTL of `reset` seconds. While the override is active, the fixed-window counter is used instead of the sliding window. When the TTL expires, the original registered limit resumes automatically.
+
+Behavior when the override is exhausted (`remaining` reaches 0):
+
+- If the remaining TTL exceeds `max_wait_time`, a `RateLimitError` is raised **immediately** — no polling occurs because the fixed-window quota won't reset until the TTL expires.
+- If the remaining TTL is within `max_wait_time`, the limiter polls until the override expires and falls back to the sliding window.
+
+This differs from the sliding window, which always polls in short intervals since entries continuously slide out of the window.
+
+Typical usage in an API client:
+
+```ruby
+class ExternalApiClient
+  extend Hanikamu::RateLimit::Mixin
+
+  limit_method :call, registry: :external_api
+
+  def call
+    response = http_client.get("/endpoint")
+
+    if response.headers["X-RateLimit-Remaining"]
+      Hanikamu::RateLimit.register_temporary_limit(
+        :external_api,
+        remaining: response.headers["X-RateLimit-Remaining"],
+        reset: response.headers["X-RateLimit-Reset"]
+      )
+    end
+
+    response
+  end
+end
+```
 
 ### Class methods
 
@@ -148,14 +203,14 @@ class MyService
   class << self
     extend Hanikamu::RateLimit::Mixin
 
-    limit_with :call, registry: :external_api
+    limit_method :call, registry: :external_api
 
     def call
       # work
     end
   end
 end
-```
+
 ```
 
 ## Error Handling
@@ -165,13 +220,13 @@ If Redis is unavailable, `RateQueue#shift` logs a warning and returns `nil`.
 ## Testing
 
 ```bash
-bundle exec rspec
+make rspec
 ```
 
 ## Development
 
 ```bash
-bundle exec rake
+make shell
 ```
 
 ## License

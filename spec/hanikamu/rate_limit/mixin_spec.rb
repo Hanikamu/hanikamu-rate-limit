@@ -174,6 +174,33 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
       expect(elapsed).to be_within(0.1).of(2.0)
     end
 
+    it "defaults interval to 60 when omitted" do
+      klass = Class.new do
+        extend Hanikamu::RateLimit::Mixin
+
+        def self.name
+          "LimiterDefaultIntervalClass"
+        end
+
+        def self.capture_rate_queue(queue)
+          @captured_queue = queue
+        end
+
+        class << self
+          attr_reader :captured_queue
+        end
+      end
+
+      allow(klass).to receive(:install_rate_limited_method) do |_, queue|
+        klass.capture_rate_queue(queue)
+      end
+
+      klass.limit_method(:execute, rate: 5)
+
+      interval_value = klass.captured_queue.instance_variable_get(:@interval)
+      expect(interval_value).to eq(60.0)
+    end
+
     context "when check_interval is provided" do
       let(:check_interval_param) { 0.2 }
 
@@ -253,7 +280,7 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
     end
   end
 
-  describe "#limit_with" do
+  describe "#limit_method with registry" do
     before do
       Hanikamu::RateLimit.reset_registry!
       Hanikamu::RateLimit.register_limit(
@@ -273,7 +300,7 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
           "RegistryOne"
         end
 
-        limit_with :execute, registry: :external_api
+        limit_method :execute, registry: :external_api
 
         def execute
           # no-op
@@ -287,7 +314,7 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
           "RegistryTwo"
         end
 
-        limit_with :execute, registry: :external_api
+        limit_method :execute, registry: :external_api
 
         def execute
           # no-op
@@ -299,6 +326,128 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
       expect do
         klass_two.new.execute
       end.to raise_error(Hanikamu::RateLimit::RateLimitError)
+    end
+
+    it "raises ArgumentError when combining registry with rate" do
+      expect do
+        Class.new do
+          extend Hanikamu::RateLimit::Mixin
+
+          def self.name = "BadCombo"
+          limit_method :execute, registry: :external_api, rate: 5
+          def execute; end
+        end
+      end.to raise_error(ArgumentError, /registry: must be used alone/)
+    end
+
+    it "raises ArgumentError when combining registry with interval" do
+      expect do
+        Class.new do
+          extend Hanikamu::RateLimit::Mixin
+
+          def self.name = "BadCombo2"
+          limit_method :execute, registry: :external_api, interval: 1.0
+          def execute; end
+        end
+      end.to raise_error(ArgumentError, /registry: must be used alone/)
+    end
+
+    it "raises ArgumentError when combining registry with check_interval" do
+      expect do
+        Class.new do
+          extend Hanikamu::RateLimit::Mixin
+
+          def self.name = "BadCombo3"
+          limit_method :execute, registry: :external_api, check_interval: 0.1
+          def execute; end
+        end
+      end.to raise_error(ArgumentError, /registry: must be used alone/)
+    end
+
+    it "raises ArgumentError when combining registry with max_wait_time" do
+      expect do
+        Class.new do
+          extend Hanikamu::RateLimit::Mixin
+
+          def self.name = "BadCombo4"
+          limit_method :execute, registry: :external_api, max_wait_time: 1.0
+          def execute; end
+        end
+      end.to raise_error(ArgumentError, /registry: must be used alone/)
+    end
+
+    it "raises ArgumentError when neither registry nor rate is provided" do
+      expect do
+        Class.new do
+          extend Hanikamu::RateLimit::Mixin
+
+          def self.name = "NoArgs"
+          limit_method :execute
+          def execute; end
+        end
+      end.to raise_error(ArgumentError, /Either registry: or rate: must be provided/)
+    end
+
+    context "with an active override" do
+      let(:override_key) { Hanikamu::RateLimit.override_key_for(:external_api) }
+
+      after do
+        redis.del(override_key)
+      end
+
+      it "uses the override instead of the registered limit" do
+        Hanikamu::RateLimit.register_temporary_limit(:external_api, remaining: 5, reset: 5)
+
+        klass = Class.new do
+          extend Hanikamu::RateLimit::Mixin
+
+          def self.name
+            "OverrideTestClass"
+          end
+
+          limit_method :execute, registry: :external_api
+
+          def execute
+            "executed"
+          end
+        end
+
+        # Registry limit is rate: 1, but override allows 5
+        5.times do
+          expect(klass.new.execute).to eq("executed")
+        end
+      end
+
+      it "resumes normal limits after override expires" do
+        Hanikamu::RateLimit.register_temporary_limit(:external_api, remaining: 2, reset: 1)
+
+        klass = Class.new do
+          extend Hanikamu::RateLimit::Mixin
+
+          def self.name
+            "OverrideExpiryClass"
+          end
+
+          limit_method :execute, registry: :external_api
+
+          def execute
+            "executed"
+          end
+        end
+
+        # Use up the override
+        2.times { klass.new.execute }
+
+        # Wait for override to expire
+        expect(wait_until? { !redis.exists?(override_key) }).to be(true)
+
+        # Should be back to normal registry limit (rate: 1)
+        expect(klass.new.execute).to eq("executed")
+
+        expect do
+          klass.new.execute
+        end.to raise_error(Hanikamu::RateLimit::RateLimitError)
+      end
     end
   end
 end
