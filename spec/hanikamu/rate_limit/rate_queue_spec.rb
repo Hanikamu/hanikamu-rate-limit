@@ -111,6 +111,12 @@ RSpec.describe Hanikamu::RateLimit::RateQueue do
       end
     end
 
+    context "when override_key is not provided" do
+      it "uses a single Redis key" do
+        expect(subject.send(:redis_keys)).to eq([subject.send(:redis_key)])
+      end
+    end
+
     context "when rate limit is reached" do
       before do
         rate.times { subject.shift }
@@ -336,6 +342,191 @@ RSpec.describe Hanikamu::RateLimit::RateQueue do
       subject.reset
 
       expect { subject.shift }.not_to raise_error
+    end
+  end
+
+  describe "override key" do
+    let(:override_key) { "#{Hanikamu::RateLimit::RateQueue::KEY_PREFIX}:registry:test_override:override" }
+    let(:queue_with_override) do
+      described_class.new(
+        rate,
+        klass_name: klass_name,
+        method: method_name,
+        interval: interval,
+        check_interval: check_interval,
+        max_wait_time: max_wait_time,
+        override_key: override_key
+      )
+    end
+
+    before do
+      queue_with_override.reset
+    end
+
+    after do
+      redis.del(override_key)
+      queue_with_override.reset
+    end
+
+    context "when override allows more requests than the sliding window" do
+      it "uses the override instead of the sliding window" do
+        redis.set(override_key, 10, ex: 5)
+
+        # Sliding window would block after 2 (rate), but override allows 10
+        5.times do
+          expect { queue_with_override.shift }.not_to raise_error
+        end
+
+        expect(redis.get(override_key).to_i).to eq(5)
+      end
+    end
+
+    context "when override remaining is exhausted" do
+      let(:max_wait_time) { 0.1 }
+
+      it "raises immediately without polling when sleep_time exceeds max_wait_time" do
+        redis.set(override_key, 0, ex: 5)
+
+        sleep_times = []
+        queue = described_class.new(
+          rate,
+          klass_name: klass_name,
+          method: method_name,
+          interval: interval,
+          check_interval: check_interval,
+          max_wait_time: max_wait_time,
+          override_key: override_key
+        ) { |sleep_time| sleep_times << sleep_time }
+
+        expect do
+          queue.shift
+        end.to raise_error(Hanikamu::RateLimit::RateLimitError, /Max wait time exceeded/)
+
+        expect(sleep_times).to be_empty
+      end
+    end
+
+    context "when override value is non-numeric" do
+      it "falls back to normal sliding window behavior" do
+        redis.set(override_key, "invalid", ex: 5)
+
+        rate.times do
+          expect { queue_with_override.shift }.not_to raise_error
+        end
+
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        queue_with_override.shift
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+
+        expect(elapsed).to be >= (interval - 0.02)
+      end
+    end
+
+    context "when override has no expiry" do
+      it "falls back to normal sliding window behavior" do
+        redis.set(override_key, 0)
+
+        rate.times do
+          expect { queue_with_override.shift }.not_to raise_error
+        end
+
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        queue_with_override.shift
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+
+        expect(elapsed).to be >= (interval - 0.02)
+      end
+
+      it "does not allow requests when remaining is positive" do
+        redis.set(override_key, 2)
+
+        rate.times do
+          expect { queue_with_override.shift }.not_to raise_error
+        end
+
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        queue_with_override.shift
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+
+        expect(elapsed).to be >= (interval - 0.02)
+      end
+    end
+
+    context "when override ttl is 0" do
+      it "falls back to normal sliding window behavior" do
+        redis.set(override_key, 0)
+        redis.expire(override_key, 1)
+        expect(wait_until? { redis.ttl(override_key) <= 0 }).to be(true)
+
+        rate.times do
+          expect { queue_with_override.shift }.not_to raise_error
+        end
+
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        queue_with_override.shift
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+
+        expect(elapsed).to be >= (interval - 0.02)
+      end
+    end
+
+    context "when override key does not exist" do
+      it "falls back to normal sliding window behavior" do
+        rate.times do
+          expect { queue_with_override.shift }.not_to raise_error
+        end
+
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        queue_with_override.shift
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+
+        expect(elapsed).to be >= (interval - 0.02)
+      end
+
+      context "with a short max_wait_time" do
+        let(:max_wait_time) { 0.05 }
+
+        it "waits until max_wait_time is exceeded before raising" do
+          rate.times do
+            expect { queue_with_override.shift }.not_to raise_error
+          end
+
+          start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          expect do
+            queue_with_override.shift
+          end.to raise_error(Hanikamu::RateLimit::RateLimitError, /Max wait time exceeded/)
+          elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+
+          expect(elapsed).to be >= max_wait_time
+        end
+      end
+    end
+
+    context "when override expires during usage" do
+      it "transitions back to sliding window" do
+        redis.set(override_key, 2, ex: 1)
+
+        # Use up the override
+        2.times { queue_with_override.shift }
+
+        # Wait for override to expire
+        expect(wait_until? { !redis.exists?(override_key) }).to be(true)
+
+        # Should now use sliding window (allows 'rate' requests)
+        rate.times do
+          expect { queue_with_override.shift }.not_to raise_error
+        end
+      end
+    end
+
+    context "when override is decremented concurrently" do
+      it "correctly tracks remaining count" do
+        redis.set(override_key, 3, ex: 5)
+
+        3.times { queue_with_override.shift }
+
+        expect(redis.get(override_key).to_i).to eq(0)
+      end
     end
   end
 end

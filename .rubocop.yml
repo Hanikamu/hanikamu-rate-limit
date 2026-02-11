@@ -82,6 +82,10 @@ RSpec/LeakyConstantDeclaration:
 RSpec/RemoveConst:
   Enabled: false
 
+Naming/PredicateMethod:
+  AllowedMethods:
+    - register_temporary_limit
+
 RSpec/NestedGroups:
   Max: 5
 
@@ -101,5 +105,12 @@ Metrics/BlockLength:
 Metrics/MethodLength:
   Max: 18
 
+Metrics/ParameterLists:
+  Exclude:
+    - 'lib/hanikamu/rate_limit/mixin.rb'
+    - 'lib/hanikamu/rate_limit/rate_queue.rb'
+
 Metrics/ClassLength:
   Max: 110
+  Exclude:
+    - 'lib/hanikamu/rate_limit/rate_queue.rb'

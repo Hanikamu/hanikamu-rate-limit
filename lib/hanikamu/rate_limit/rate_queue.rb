@@ -9,10 +9,29 @@ module Hanikamu
       KEY_PREFIX = "hanikamu:rate_limit:rate_queue"
       LUA_SCRIPT = <<~LUA
         local key = KEYS[1]
+        local override_key = KEYS[2]
         local now = tonumber(ARGV[1])
         local interval = tonumber(ARGV[2])
         local rate = tonumber(ARGV[3])
         local member = ARGV[4]
+
+        if override_key and override_key ~= "" then
+          local override_val = redis.call("GET", override_key)
+          if override_val then
+            local remaining = tonumber(override_val)
+            if remaining then
+              local ttl = redis.call("TTL", override_key)
+              if ttl > 0 then
+                if remaining > 0 then
+                  redis.call("DECR", override_key)
+                  return {1, 0, 0}
+                else
+                  return {0, ttl, 1}
+                end
+              end
+            end
+          end
+        end
 
         redis.call("ZREMRANGEBYSCORE", key, 0, now - interval)
         local count = redis.call("ZCARD", key)
@@ -33,24 +52,38 @@ module Hanikamu
         return {0, interval}
       LUA
 
-      def initialize(rate, klass_name:, method:, interval: 60, **options, &block)
+      def initialize(
+        rate,
+        klass_name:,
+        method:,
+        interval: 60,
+        key_prefix: nil,
+        override_key: nil,
+        check_interval: nil,
+        max_wait_time: nil,
+        &block
+      )
         @rate = rate
         @interval = interval.to_f
         @klass_name = klass_name
         @method = method
-        @key_prefix = options[:key_prefix]
-        @check_interval = options.fetch(:check_interval, Hanikamu::RateLimit.config.check_interval)
-        @max_wait_time = options.fetch(:max_wait_time, Hanikamu::RateLimit.config.max_wait_time)
+        @key_prefix = key_prefix
+        @override_key = override_key&.to_s
+        @check_interval = check_interval.nil? ? Hanikamu::RateLimit.config.check_interval : check_interval
+        @max_wait_time = max_wait_time.nil? ? Hanikamu::RateLimit.config.max_wait_time : max_wait_time
         @block = block
       end
 
       def shift
         start_time = current_time
-
         loop do
-          allowed, sleep_time = attempt_shift(start_time)
+          allowed, sleep_time, is_override = attempt_shift(start_time)
 
           return if allowed == 1
+
+          if is_override == 1 && @max_wait_time && sleep_time.to_f > @max_wait_time
+            raise Hanikamu::RateLimit::RateLimitError, "Max wait time exceeded"
+          end
 
           handle_sleep(sleep_time)
         end
@@ -72,6 +105,12 @@ module Hanikamu
         end
       end
 
+      def redis_keys
+        return [redis_key] if @override_key.nil? || @override_key.empty?
+
+        [redis_key, @override_key]
+      end
+
       def attempt_shift(start_time)
         now = current_time
         elapsed = now - start_time
@@ -84,11 +123,7 @@ module Hanikamu
       end
 
       def eval_script(now, member)
-        redis.evalsha(
-          lua_sha,
-          keys: [redis_key],
-          argv: [now, @interval, @rate, member]
-        )
+        redis.evalsha(lua_sha, keys: redis_keys, argv: [now, @interval, @rate, member])
       rescue Redis::CommandError => e
         return reload_script_and_retry(now, member) if e.message.include?("NOSCRIPT")
 
@@ -97,11 +132,7 @@ module Hanikamu
 
       def reload_script_and_retry(now, member)
         @lua_sha = redis.script(:load, LUA_SCRIPT)
-        redis.evalsha(
-          lua_sha,
-          keys: [redis_key],
-          argv: [now, @interval, @rate, member]
-        )
+        redis.evalsha(lua_sha, keys: redis_keys, argv: [now, @interval, @rate, member])
       end
 
       def handle_sleep(sleep_time)

@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    hanikamu-rate-limit (0.1.0)
+    hanikamu-rate-limit (0.2.0)
       dry-configurable (~> 1.0)
       dry-container (~> 0.11)
       redis (~> 5.0)
@@ -131,7 +131,7 @@ CHECKSUMS
   dry-container (0.11.0) sha256=23be9381644d47343f3bf13b082b4255994ada0bfd88e0737eaaadc99d035229
   dry-core (1.2.0) sha256=0cc5a7da88df397f153947eeeae42e876e999c1e30900f3c536fb173854e96a1
   erb (6.0.1) sha256=28ecdd99c5472aebd5674d6061e3c6b0a45c049578b071e5a52c2a7f13c197e5
-  hanikamu-rate-limit (0.1.0)
+  hanikamu-rate-limit (0.2.0)
   io-console (0.8.2) sha256=d6e3ae7a7cc7574f4b8893b4fca2162e57a825b223a177b7afa236c5ef9814cc
   irb (1.16.0) sha256=2abe56c9ac947cdcb2f150572904ba798c1e93c890c256f8429981a7675b0806
   json (2.18.1) sha256=fe112755501b8d0466b5ada6cf50c8c3f41e897fa128ac5d263ec09eedc9f986
