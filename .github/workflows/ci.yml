@@ -9,6 +9,7 @@ on:
       - "spec/**"
       - "Rakefile"
       - "Gemfile"
+      - "Gemfile.lock"
       - ".rubocop.yml"
   pull_request:
     branches:
