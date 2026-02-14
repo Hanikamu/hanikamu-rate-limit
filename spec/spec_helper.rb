@@ -35,6 +35,19 @@ RSpec.configure do |config|
   end
 end
 
+# Helper: delete Redis keys matching a pattern using SCAN (non-blocking alternative to KEYS).
+def scan_and_delete(redis, pattern)
+  batch = []
+  redis.scan_each(match: pattern) do |key|
+    batch << key
+    if batch.size >= 100
+      redis.del(*batch)
+      batch.clear
+    end
+  end
+  redis.del(*batch) unless batch.empty?
+end
+
 # Helper: wait_until for polling-based expectations to reduce flakiness
 def wait_until?(timeout: 2, interval: 0.05)
   start = Process.clock_gettime(Process::CLOCK_MONOTONIC)

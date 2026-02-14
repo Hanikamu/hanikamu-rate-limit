@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Mountable UI dashboard for live rate limit status and 24-hour history.
+- Metrics time-series collection for allowed/blocked counts and override status.
+
 ## 0.2.0 - 2026-02-11
 
 ### Breaking Changes
