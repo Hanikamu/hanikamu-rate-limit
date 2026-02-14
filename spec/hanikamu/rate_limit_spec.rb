@@ -82,6 +82,44 @@ RSpec.describe Hanikamu::RateLimit do
       registered = described_class.fetch_limit(:external_api)
       expect(registered[:rate]).to eq(5)
     end
+
+    it "has metrics_enabled false by default" do
+      expect(described_class.config.metrics_enabled).to be(false)
+    end
+
+    it "allows enabling metrics globally" do
+      described_class.configure do |config|
+        config.metrics_enabled = true
+      end
+
+      expect(described_class.config.metrics_enabled).to be(true)
+
+      described_class.configure do |config|
+        config.metrics_enabled = false
+      end
+    end
+
+    it "stores metrics option in registered limits" do
+      described_class.reset_registry!
+
+      described_class.configure do |config|
+        config.register_limit(:no_metrics_api, rate: 5, interval: 0.5, metrics: false)
+      end
+
+      registered = described_class.fetch_limit(:no_metrics_api)
+      expect(registered[:metrics]).to be(false)
+    end
+
+    it "omits metrics key from registered limits when not specified" do
+      described_class.reset_registry!
+
+      described_class.configure do |config|
+        config.register_limit(:default_metrics_api, rate: 5, interval: 0.5)
+      end
+
+      registered = described_class.fetch_limit(:default_metrics_api)
+      expect(registered).not_to have_key(:metrics)
+    end
   end
 
   describe ".register_temporary_limit" do
@@ -172,7 +210,9 @@ RSpec.describe Hanikamu::RateLimit do
     end
 
     it "reuses the Redis client across calls" do
-      redis_double = instance_double(Redis, set: true, close: nil, del: nil)
+      pipeline_double = instance_double(Redis, set: true, hset: true, expire: true)
+      redis_double = instance_double(Redis, set: true, close: nil, del: nil, hset: true, expire: true)
+      allow(redis_double).to receive(:pipelined).and_yield(pipeline_double)
       allow(Redis).to receive(:new).and_return(redis_double)
 
       described_class.instance_variable_set(:@redis_client, nil)

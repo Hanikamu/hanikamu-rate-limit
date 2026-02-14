@@ -103,14 +103,33 @@ Metrics/BlockLength:
     - '*.gemspec'
 
 Metrics/MethodLength:
-  Max: 18
+  Max: 15
+
+Metrics/AbcSize:
+  Max: 20
+
+Metrics/CyclomaticComplexity:
+  Max: 8
+
+Metrics/PerceivedComplexity:
+  Max: 8
+
+Metrics/ModuleLength:
+  Exclude:
+    - 'lib/hanikamu/rate_limit/metrics.rb'
 
 Metrics/ParameterLists:
   Exclude:
+    - 'lib/hanikamu/rate_limit.rb'
     - 'lib/hanikamu/rate_limit/mixin.rb'
     - 'lib/hanikamu/rate_limit/rate_queue.rb'
+    - 'lib/hanikamu/rate_limit/metrics.rb'
 
 Metrics/ClassLength:
   Max: 110
   Exclude:
     - 'lib/hanikamu/rate_limit/rate_queue.rb'
+
+RSpec/BeforeAfterAll:
+  Exclude:
+    - 'spec/hanikamu/rate_limit/ui_spec.rb'

@@ -61,6 +61,7 @@ module Hanikamu
         override_key: nil,
         check_interval: nil,
         max_wait_time: nil,
+        metrics: nil,
         &block
       )
         @rate = rate
@@ -72,17 +73,19 @@ module Hanikamu
         @check_interval = check_interval.nil? ? Hanikamu::RateLimit.config.check_interval : check_interval
         @max_wait_time = max_wait_time.nil? ? Hanikamu::RateLimit.config.max_wait_time : max_wait_time
         @block = block
+        setup_metrics(metrics)
       end
 
       def shift
         start_time = current_time
+        override_recorded = false
         loop do
           allowed, sleep_time, is_override = attempt_shift(start_time)
+          return record_and_return_allowed if allowed == 1
 
-          return if allowed == 1
-
-          if is_override == 1 && @max_wait_time && sleep_time.to_f > @max_wait_time
-            raise Hanikamu::RateLimit::RateLimitError, "Max wait time exceeded"
+          if is_override == 1
+            handle_override_rejection(sleep_time, record: !override_recorded)
+            override_recorded = true
           end
 
           handle_sleep(sleep_time)
@@ -97,6 +100,33 @@ module Hanikamu
       end
 
       private
+
+      def setup_metrics(metrics)
+        @metrics_enabled = metrics.nil? ? Hanikamu::RateLimit.config.metrics_enabled : metrics
+        prefix = @key_prefix || "#{KEY_PREFIX}:#{@klass_name}:#{@method}"
+        @metrics_registry = Hanikamu::RateLimit::Metrics.registry_from_key_prefix(prefix)
+        return unless @metrics_enabled
+
+        Hanikamu::RateLimit::Metrics.record_registry_meta(
+          redis_key, prefix, @rate, @interval, @klass_name, @method
+        )
+      end
+
+      def record_and_return_allowed
+        Hanikamu::RateLimit::Metrics.record_allowed(redis_key) if @metrics_enabled
+        nil
+      end
+
+      def handle_override_rejection(sleep_time, record: true)
+        if record && @metrics_enabled && @metrics_registry
+          Hanikamu::RateLimit::Metrics.record_override(@metrics_registry, 0, sleep_time.to_i)
+        end
+
+        return unless @max_wait_time && sleep_time.to_f > @max_wait_time
+
+        Hanikamu::RateLimit::Metrics.record_blocked(redis_key) if @metrics_enabled
+        raise Hanikamu::RateLimit::RateLimitError, "Max wait time exceeded"
+      end
 
       def redis_key
         @redis_key ||= begin
@@ -115,6 +145,7 @@ module Hanikamu
         now = current_time
         elapsed = now - start_time
         if @max_wait_time && elapsed > @max_wait_time
+          Hanikamu::RateLimit::Metrics.record_blocked(redis_key) if @metrics_enabled
           raise Hanikamu::RateLimit::RateLimitError, "Max wait time exceeded"
         end
 
