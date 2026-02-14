@@ -8,6 +8,7 @@ gemspec
 group :development do
   gem "byebug", ">= 3.4"
   gem "irb"
+  gem "rails", "~> 8.1.0"
   gem "rake"
   gem "rspec", "~> 3.0"
   gem "rubocop"

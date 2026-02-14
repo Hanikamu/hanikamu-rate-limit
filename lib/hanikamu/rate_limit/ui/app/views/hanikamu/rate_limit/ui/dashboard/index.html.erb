@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hanikamu Rate Limit Dashboard</title>
+    <style>
+      :root {
+        --bg: #f7f2ea;
+        --bg-accent: #f0e7d9;
+        --ink: #1f1b16;
+        --muted: #665b52;
+        --card: #fffaf3;
+        --accent: #d94630;
+        --accent-soft: #f6b7aa;
+        --line: #e5d7c7;
+        --shadow: rgba(31, 27, 22, 0.08);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 15% 15%, #fff8ef 0%, transparent 55%),
+          radial-gradient(circle at 85% 10%, #f7d3c7 0%, transparent 50%),
+          linear-gradient(160deg, var(--bg) 0%, var(--bg-accent) 100%);
+        min-height: 100vh;
+      }
+
+      header {
+        padding: 32px 20px 10px;
+      }
+
+      .page {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 0 20px 40px;
+      }
+
+      .title {
+        font-size: clamp(28px, 4vw, 44px);
+        font-weight: 700;
+        margin: 0 0 8px;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        margin: 0 0 20px;
+        font-size: 16px;
+      }
+
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 14px;
+        margin-bottom: 24px;
+      }
+
+      .summary-card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 16px 18px;
+        box-shadow: 0 12px 24px var(--shadow);
+      }
+
+      .summary-card .label {
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .summary-card .value {
+        font-size: 14px;
+        font-weight: 600;
+        margin-top: 6px;
+      }
+
+      .grid {
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+      }
+
+      .card {
+        background: var(--card);
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        padding: 18px;
+        box-shadow: 0 18px 30px var(--shadow);
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+
+      .card-header {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .card-title {
+        font-weight: 700;
+        font-size: 18px;
+      }
+
+      .card-meta {
+        font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "Consolas", monospace;
+        font-size: 12px;
+        color: var(--muted);
+        word-break: break-all;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(217, 70, 48, 0.12);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .stats {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .stats-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+        gap: 10px;
+      }
+
+      .stat {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: #fffdf8;
+      }
+
+      .stat .label {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .stat .value {
+        font-size: 16px;
+        font-weight: 600;
+        margin-top: 4px;
+      }
+
+      .counters-group {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+      }
+
+      .counter-col {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 10px 12px;
+        background: #fffdf8;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .counter-col .counter-title {
+        font-size: 11px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        font-weight: 600;
+      }
+
+      .counter-col .counter-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 13px;
+      }
+
+      .counter-col .counter-label {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .counter-col .counter-value {
+        font-weight: 600;
+        font-size: 15px;
+      }
+
+      .counter-value.blocked {
+        color: var(--accent);
+      }
+
+      .chart {
+        border-radius: 14px;
+        border: 1px solid var(--line);
+        padding: 12px;
+        background: #fff;
+        height: 180px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .chart[data-scope="short"] {
+        height: 150px;
+      }
+
+      .chart canvas {
+        width: 100%;
+        height: 100% !important;
+        display: block;
+        flex: 1 1 auto;
+      }
+
+      .legend {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .override {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 13px;
+        color: var(--muted);
+        min-height: 34px;
+      }
+
+      .override strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      .empty {
+        padding: 40px 20px;
+        background: var(--card);
+        border-radius: 18px;
+        border: 1px dashed var(--line);
+        text-align: center;
+        color: var(--muted);
+      }
+
+      @media (max-width: 720px) {
+        header {
+          padding-top: 24px;
+        }
+
+        .summary {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"
+            integrity="sha384-T/4KgSWuZEPozpPz7rnnp/5lDSnpY1VPJCojf1S81uTHS1E38qgLfMgVsAeRCWc4"
+            crossorigin="anonymous"></script>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <h1 class="title">Rate Limit Metrics</h1>
+        <p class="subtitle">Live limits, last 24 hours, and override status.</p>
+      </header>
+
+      <section class="summary" id="summary-cards">
+        <div class="summary-card">
+          <div class="label">Limits tracked</div>
+          <div class="value" data-summary="limits"><%= @presenter.limits_count %></div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Window</div>
+          <div class="value" data-summary="window"><%= @presenter.window_hours %> hours</div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Bucket size</div>
+          <div class="value" data-summary="bucket"><%= @presenter.bucket_seconds %> seconds</div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Generated</div>
+          <div class="value" data-summary="generated"><%= @presenter.generated_at_utc %></div>
+        </div>
+      </section>
+
+      <% if @presenter.redis_info? %>
+      <section class="summary" id="redis-info">
+        <div class="summary-card">
+          <div class="label">Redis version</div>
+          <div class="value" data-redis="version"><%= @presenter.redis_info["version"] %></div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Memory used</div>
+          <div class="value" data-redis="memory"><%= @presenter.redis_info["used_memory_human"] %></div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Peak memory</div>
+          <div class="value" data-redis="peak"><%= @presenter.redis_info["used_memory_peak_human"] %></div>
+        </div>
+        <div class="summary-card">
+          <div class="label">Connected clients</div>
+          <div class="value" data-redis="clients"><%= @presenter.redis_info["connected_clients"] %></div>
+        </div>
+      </section>
+      <% end %>
+
+      <% unless @presenter.limits? %>
+        <div class="empty" id="empty-state">No rate limits have been recorded yet.</div>
+      <% else %>
+        <section class="grid" id="limits-grid">
+          <% @presenter.limits.each do |limit| %>
+            <article class="card">
+              <div class="card-header">
+                <div class="card-title"><%= limit.identifier %></div>
+                <div class="card-meta"><%= limit.key_prefix %></div>
+              </div>
+
+              <div class="stats">
+                <div class="stats-row">
+                  <div class="stat">
+                    <div class="label">Rate limit</div>
+                    <div class="value" data-stat="rate"><%= limit.rate %> / <%= limit.interval_formatted %>s</div>
+                  </div>
+                  <div class="stat">
+                    <div class="label">Hits / sec</div>
+                    <div class="value" data-stat="hits"><%= limit.last_realtime_hits %></div>
+                  </div>
+                  <div class="stat">
+                    <div class="label">Blocked / sec</div>
+                    <div class="value" data-stat="blocked"><%= limit.last_realtime_blocked %></div>
+                  </div>
+                </div>
+                <div class="counters-group">
+                  <div class="counter-col">
+                    <div class="counter-title">Last 5 min</div>
+                    <div class="counter-row"><span class="counter-label">Allowed</span><span class="counter-value" data-stat="allowed-5m"><%= limit.allowed_total_5m %></span></div>
+                    <div class="counter-row"><span class="counter-label">Blocked</span><span class="counter-value blocked" data-stat="blocked-5m"><%= limit.blocked_total_5m %></span></div>
+                  </div>
+                  <div class="counter-col">
+                    <div class="counter-title">Last 24h</div>
+                    <div class="counter-row"><span class="counter-label">Allowed</span><span class="counter-value" data-stat="allowed-24h"><%= limit.allowed_total_24h %></span></div>
+                    <div class="counter-row"><span class="counter-label">Blocked</span><span class="counter-value blocked" data-stat="blocked-24h"><%= limit.blocked_total_24h %></span></div>
+                  </div>
+                  <div class="counter-col">
+                    <div class="counter-title">All time</div>
+                    <div class="counter-row"><span class="counter-label">Allowed</span><span class="counter-value" data-stat="allowed-all"><%= limit.lifetime_allowed %></span></div>
+                    <div class="counter-row"><span class="counter-label">Blocked</span><span class="counter-value blocked" data-stat="blocked-all"><%= limit.lifetime_blocked %></span></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="chart" data-key="<%= limit.key_prefix %>" data-scope="long" data-limit="<%= limit.rate %>" data-interval="<%= limit.interval %>">
+                <canvas></canvas>
+                <div class="legend">
+                  <span>Last 24 hours</span>
+                  <span>Limit: <%= limit.limit_per_bucket_formatted %> / bucket</span>
+                </div>
+              </div>
+
+              <div class="chart" data-key="<%= limit.key_prefix %>" data-scope="short" data-limit="<%= limit.rate %>" data-interval="<%= limit.interval %>">
+                <canvas></canvas>
+                <div class="legend">
+                  <span>Last 5 minutes</span>
+                  <span>Limit: <%= limit.realtime_limit_per_bucket_formatted %> / <%= limit.effective_realtime_bucket_seconds %>s</span>
+                </div>
+              </div>
+
+              <div class="override">
+                <span>Override</span>
+                <% if limit.override? %>
+                  <span class="pill">Remaining <strong><%= limit.override_remaining %></strong> | Reset <strong><%= limit.override_reset %>s</strong></span>
+                <% else %>
+                  <strong>None</strong>
+                <% end %>
+              </div>
+            </article>
+          <% end %>
+        </section>
+      <% end %>
+    </div>
+
+    <script>
+      const metricsBase = window.location.pathname.replace(/\/?$/, "/");
+      const streamUrl = `${window.location.origin}${metricsBase}stream`;
+      const grid = document.getElementById("limits-grid");
+      const emptyState = document.getElementById("empty-state");
+
+      const escapeHtml = (value) => {
+        const str = String(value ?? "");
+        return str
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      };
+
+      const safeNum = (value) => Number(value) || 0;
+
+      const chartData = new Map();
+      const chartInstances = new Map();
+
+      const padSeries = (series, length) => {
+        const normalized = (series || []).slice(0, length);
+        while (normalized.length < length) {
+          normalized.push(0);
+        }
+        return normalized;
+      };
+
+      const aggregateBuckets = (buckets, values, intervalSeconds) => {
+        const effectiveBucket = Math.max(Math.ceil(intervalSeconds), 1);
+        if (effectiveBucket <= 1) return { buckets, values };
+        const grouped = new Map();
+        (buckets || []).forEach((ts, i) => {
+          const groupKey = ts - (ts % effectiveBucket);
+          grouped.set(groupKey, (grouped.get(groupKey) || 0) + (values[i] || 0));
+        });
+        const sortedKeys = Array.from(grouped.keys()).sort((a, b) => a - b);
+        return { buckets: sortedKeys, values: sortedKeys.map((k) => grouped.get(k)) };
+      };
+
+      const formatRealtimeLabel = (ts) => {
+        const date = new Date(ts * 1000);
+        return `${date.getUTCHours().toString().padStart(2, "0")}:${date.getUTCMinutes().toString().padStart(2, "0")}:${date.getUTCSeconds().toString().padStart(2, "0")}`;
+      };
+
+      const renderCharts = () => {
+        const charts = document.querySelectorAll("[data-key]");
+        charts.forEach((chart) => {
+          const key = chart.dataset.key;
+          const scope = chart.dataset.scope || "long";
+          const canvas = chart.querySelector("canvas");
+          if (!key || !canvas) {
+            return;
+          }
+          const data = chartData.get(`${key}:${scope}`);
+          const limitValue = data?.limit || Number(chart.dataset.limit || 0);
+          const labels = data?.labels || [];
+          const length = labels.length;
+          const allowedSeries = padSeries(data?.allowed || [], length);
+          const blockedSeries = padSeries(data?.blocked || [], length);
+          const limitSeries = new Array(length).fill(limitValue);
+          const maxVal = Math.max(limitValue, ...allowedSeries, 1);
+          const blockedBand = blockedSeries.map((v) => v > 0 ? maxVal * 2 : 0);
+
+          const instanceKey = `${key}:${scope}`;
+          const existing = chartInstances.get(instanceKey);
+          if (existing) {
+            existing.data.labels = labels;
+            existing.data.datasets[0].data = blockedBand;
+            existing.data.datasets[1].data = limitSeries;
+            existing.data.datasets[2].data = allowedSeries;
+            existing.update("none");
+            return;
+          }
+
+          const ctx = canvas.getContext("2d");
+          const chartInstance = new Chart(ctx, {
+            type: "line",
+            data: {
+              labels: labels,
+              datasets: [
+                {
+                  label: "Blocked",
+                  type: "bar",
+                  data: blockedBand,
+                  backgroundColor: "rgba(217, 70, 48, 0.08)",
+                  borderWidth: 0,
+                  barPercentage: 1.0,
+                  categoryPercentage: 1.0,
+                  order: 3
+                },
+                {
+                  label: "Limit",
+                  data: limitSeries,
+                  borderColor: "rgba(31, 27, 22, 0.55)",
+                  borderDash: [6, 4],
+                  borderWidth: 1.5,
+                  pointRadius: 0,
+                  tension: 0,
+                  fill: false,
+                  order: 2
+                },
+                {
+                  label: "Allowed",
+                  data: allowedSeries,
+                  borderColor: "rgba(46, 160, 67, 0.9)",
+                  backgroundColor: "rgba(46, 160, 67, 0.08)",
+                  borderWidth: 2,
+                  pointRadius: 0,
+                  tension: 0.3,
+                  fill: true,
+                  order: 1
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              animation: false,
+              plugins: {
+                legend: {
+                  display: true,
+                  position: "top",
+                  align: "end",
+                  labels: {
+                    boxWidth: 12,
+                    boxHeight: 2,
+                    padding: 10,
+                    font: { size: 11 },
+                    color: "rgba(31, 27, 22, 0.65)",
+                    usePointStyle: false,
+                    filter: (item) => item.text !== "Blocked"
+                  }
+                },
+                tooltip: {
+                  enabled: true,
+                  mode: "index",
+                  intersect: false,
+                  filter: (item) => item.dataset.label !== "Blocked"
+                }
+              },
+              scales: {
+                x: { display: false },
+                y: {
+                  display: true,
+                  beginAtZero: true,
+                  ticks: {
+                    maxTicksLimit: 4,
+                    color: "rgba(31, 27, 22, 0.55)"
+                  },
+                  grid: {
+                    color: "rgba(31, 27, 22, 0.08)"
+                  }
+                }
+              }
+            }
+          });
+
+          chartInstances.set(instanceKey, chartInstance);
+        });
+      };
+
+      const renderPayload = (payload) => {
+        document.querySelector("[data-summary=limits]").textContent = payload.limits.length;
+        document.querySelector("[data-summary=window]").textContent = `${(payload.window_seconds / 3600).toFixed(1)} hours`;
+        document.querySelector("[data-summary=bucket]").textContent = `${payload.bucket_seconds} seconds`;
+        document.querySelector("[data-summary=generated]").textContent = new Date(payload.generated_at * 1000).toUTCString().replace(",", "");
+
+        if (payload.redis) {
+          const r = payload.redis;
+          const set = (attr, val) => { const el = document.querySelector(`[data-redis=${attr}]`); if (el) el.textContent = val; };
+          set("version", r.version);
+          set("memory", r.used_memory_human);
+          set("peak", r.used_memory_peak_human);
+          set("clients", r.connected_clients);
+        }
+
+        if (!grid) {
+          return;
+        }
+
+        if (payload.limits.length === 0) {
+          grid.innerHTML = "";
+          if (emptyState) {
+            emptyState.style.display = "block";
+          }
+          return;
+        }
+
+        if (emptyState) {
+          emptyState.style.display = "none";
+        }
+
+        chartData.clear();
+
+        const incomingKeys = payload.limits.map((l) => l.key_prefix).filter(Boolean);
+        const existingKeys = Array.from(grid.querySelectorAll("[data-limit-key]")).map((el) => el.dataset.limitKey);
+        const needsRebuild = incomingKeys.length !== existingKeys.length ||
+          incomingKeys.some((k, i) => k !== existingKeys[i]);
+
+        payload.limits.forEach((limit, idx) => {
+          const history = limit.history || { allowed: [], blocked: [], buckets: [] };
+          const realtimeHistory = limit.realtime_history || { allowed: [], blocked: [], buckets: [] };
+          const limitPerBucket = (Number(limit.rate) || 0) * (payload.bucket_seconds / Number(limit.interval || 1));
+          const labels = (history.buckets || []).map((bucket) => {
+            const date = new Date(bucket * 1000);
+            return `${date.getUTCHours().toString().padStart(2, "0")}:${date.getUTCMinutes().toString().padStart(2, "0")}`;
+          });
+
+          const rtAllowed = realtimeHistory.allowed || [];
+          const rtBlocked = realtimeHistory.blocked || [];
+          const lastRealtimeHits = rtAllowed.length > 1 ? rtAllowed[rtAllowed.length - 2] : (rtAllowed[0] || 0);
+          const lastRealtimeBlocked = rtBlocked.length > 1 ? rtBlocked[rtBlocked.length - 2] : (rtBlocked[0] || 0);
+          const interval = Number(limit.interval || 1);
+          const effectiveBucket = Math.max(Math.ceil(interval), 1);
+          const realtimeLimit = (Number(limit.rate) || 0) * (effectiveBucket / interval);
+          const aggAllowed = aggregateBuckets(realtimeHistory.buckets, realtimeHistory.allowed, interval);
+          const aggBlocked = aggregateBuckets(realtimeHistory.buckets, realtimeHistory.blocked, interval);
+          const realtimeLabels = aggAllowed.buckets.map(formatRealtimeLabel);
+
+          if (limit.key_prefix) {
+            chartData.set(`${limit.key_prefix}:long`, {
+              allowed: history.allowed || [],
+              blocked: history.blocked || [],
+              limit: limitPerBucket,
+              labels: labels
+            });
+
+            chartData.set(`${limit.key_prefix}:short`, {
+              allowed: aggAllowed.values,
+              blocked: aggBlocked.values,
+              limit: realtimeLimit,
+              labels: realtimeLabels
+            });
+          }
+        });
+
+        if (needsRebuild) {
+          chartInstances.forEach((instance) => instance.destroy());
+          chartInstances.clear();
+
+          grid.innerHTML = payload.limits.map((limit) => {
+            const history = limit.history || { allowed: [], blocked: [], buckets: [] };
+            const realtimeHistory = limit.realtime_history || { allowed: [], blocked: [], buckets: [] };
+            const allowedTotal24h = (history.allowed || []).reduce((sum, value) => sum + value, 0);
+            const blockedTotal24h = (history.blocked || []).reduce((sum, value) => sum + value, 0);
+            const rtAllowed = realtimeHistory.allowed || [];
+            const rtBlocked = realtimeHistory.blocked || [];
+            const allowed5m = rtAllowed.reduce((s, v) => s + v, 0);
+            const blocked5m = rtBlocked.reduce((s, v) => s + v, 0);
+            const limitPerBucket = (Number(limit.rate) || 0) * (payload.bucket_seconds / Number(limit.interval || 1));
+            const lastRealtimeHits = rtAllowed.length > 1
+              ? rtAllowed[rtAllowed.length - 2]
+              : 0;
+            const lastRealtimeBlocked = rtBlocked.length > 1
+              ? rtBlocked[rtBlocked.length - 2]
+              : 0;
+            const lifetime = limit.lifetime || { allowed: 0, blocked: 0 };
+            const override = limit.override;
+            const identifier = limit.registry || `${limit.klass_name}#${limit.method}`;
+            const interval = Number(limit.interval || 1);
+            const effectiveBucket = Math.max(Math.ceil(interval), 1);
+            const rtLimitPerBucket = (Number(limit.rate) || 0) * (effectiveBucket / interval);
+            const realtimeLimitLabel = Number.isFinite(rtLimitPerBucket) ? rtLimitPerBucket.toFixed(2) : "0.00";
+            const limitLabel = Number.isFinite(limitPerBucket) ? limitPerBucket.toFixed(2) : "0.00";
+
+            return `
+              <article class="card" data-limit-key="${escapeHtml(limit.key_prefix)}">
+                <div class="card-header">
+                  <div class="card-title">${escapeHtml(identifier)}</div>
+                  <div class="card-meta">${escapeHtml(limit.key_prefix)}</div>
+                </div>
+                <div class="stats">
+                  <div class="stats-row">
+                    <div class="stat"><div class="label">Rate limit</div><div class="value" data-stat="rate">${safeNum(limit.rate)} / ${safeNum(limit.interval).toFixed(2)}s</div></div>
+                    <div class="stat"><div class="label">Hits / sec</div><div class="value" data-stat="hits">${safeNum(lastRealtimeHits)}</div></div>
+                    <div class="stat"><div class="label">Blocked / sec</div><div class="value" data-stat="blocked">${safeNum(lastRealtimeBlocked)}</div></div>
+                  </div>
+                  <div class="counters-group">
+                    <div class="counter-col">
+                      <div class="counter-title">Last 5 min</div>
+                      <div class="counter-row"><span class="counter-label">Allowed</span><span class="counter-value" data-stat="allowed-5m">${safeNum(allowed5m)}</span></div>
+                      <div class="counter-row"><span class="counter-label">Blocked</span><span class="counter-value blocked" data-stat="blocked-5m">${safeNum(blocked5m)}</span></div>
+                    </div>
+                    <div class="counter-col">
+                      <div class="counter-title">Last 24h</div>
+                      <div class="counter-row"><span class="counter-label">Allowed</span><span class="counter-value" data-stat="allowed-24h">${safeNum(allowedTotal24h)}</span></div>
+                      <div class="counter-row"><span class="counter-label">Blocked</span><span class="counter-value blocked" data-stat="blocked-24h">${safeNum(blockedTotal24h)}</span></div>
+                    </div>
+                    <div class="counter-col">
+                      <div class="counter-title">All time</div>
+                      <div class="counter-row"><span class="counter-label">Allowed</span><span class="counter-value" data-stat="allowed-all">${safeNum(lifetime.allowed)}</span></div>
+                      <div class="counter-row"><span class="counter-label">Blocked</span><span class="counter-value blocked" data-stat="blocked-all">${safeNum(lifetime.blocked)}</span></div>
+                    </div>
+                  </div>
+                </div>
+                <div class="chart" data-key="${escapeHtml(limit.key_prefix)}" data-limit="${safeNum(limit.rate)}" data-interval="${safeNum(limit.interval)}">
+                  <canvas></canvas>
+                  <div class="legend">
+                    <span data-legend="allowed">Last 24 hours</span>
+                    <span data-legend="limit">Limit: ${limitLabel} / bucket</span>
+                  </div>
+                </div>
+                <div class="chart" data-key="${escapeHtml(limit.key_prefix)}" data-scope="short" data-limit="${safeNum(limit.rate)}" data-interval="${safeNum(limit.interval)}">
+                  <canvas></canvas>
+                  <div class="legend">
+                    <span>Last 5 minutes</span>
+                    <span data-legend="rt-limit">Limit: ${realtimeLimitLabel} / ${effectiveBucket}s</span>
+                  </div>
+                </div>
+                <div class="override">
+                  <span>Override</span>
+                  ${override ? `<span class="pill">Remaining <strong>${escapeHtml(override.remaining)}</strong> | Reset <strong>${escapeHtml(override.reset)}s</strong></span>` : "<strong>None</strong>"}
+                </div>
+              </article>
+            `;
+          }).join("");
+        } else {
+          payload.limits.forEach((limit) => {
+            const card = grid.querySelector(`[data-limit-key="${CSS.escape(limit.key_prefix)}"]`);
+            if (!card) return;
+
+            const realtimeHistory = limit.realtime_history || { allowed: [], blocked: [], buckets: [] };
+            const history = limit.history || { allowed: [], blocked: [], buckets: [] };
+            const allowedTotal24h = (history.allowed || []).reduce((sum, v) => sum + v, 0);
+            const blockedTotal24h = (history.blocked || []).reduce((sum, v) => sum + v, 0);
+            const limitPerBucket = (Number(limit.rate) || 0) * (payload.bucket_seconds / Number(limit.interval || 1));
+            const rtAllowed2 = realtimeHistory.allowed || [];
+            const rtBlocked2 = realtimeHistory.blocked || [];
+            const allowed5m = rtAllowed2.reduce((s, v) => s + v, 0);
+            const blocked5m = rtBlocked2.reduce((s, v) => s + v, 0);
+            const lastRealtimeHits = rtAllowed2.length > 1 ? rtAllowed2[rtAllowed2.length - 2] : (rtAllowed2[0] || 0);
+            const lastRealtimeBlocked = rtBlocked2.length > 1 ? rtBlocked2[rtBlocked2.length - 2] : (rtBlocked2[0] || 0);
+            const lifetime = limit.lifetime || { allowed: 0, blocked: 0 };
+            const override = limit.override;
+
+            const setVal = (sel, val) => { const el = card.querySelector(sel); if (el) el.textContent = val; };
+            setVal('[data-stat="hits"]', lastRealtimeHits);
+            setVal('[data-stat="blocked"]', lastRealtimeBlocked);
+            setVal('[data-stat="allowed-5m"]', allowed5m);
+            setVal('[data-stat="blocked-5m"]', blocked5m);
+            setVal('[data-stat="allowed-24h"]', allowedTotal24h);
+            setVal('[data-stat="blocked-24h"]', blockedTotal24h);
+            setVal('[data-stat="allowed-all"]', lifetime.allowed);
+            setVal('[data-stat="blocked-all"]', lifetime.blocked);
+
+            const longLegend = card.querySelector('[data-key]:not([data-scope="short"])');
+            if (longLegend) {
+              const spans = longLegend.querySelectorAll('.legend span');
+              if (spans[1]) spans[1].textContent = `Limit: ${limitPerBucket.toFixed(2)} / bucket`;
+            }
+
+            const interval = Number(limit.interval || 1);
+            const effectiveBucket = Math.max(Math.ceil(interval), 1);
+            const rtLimitPerBucket = (Number(limit.rate) || 0) * (effectiveBucket / interval);
+            const shortLegend = card.querySelector('[data-scope="short"]');
+            if (shortLegend) {
+              const rtLimitEl = shortLegend.querySelector('[data-legend="rt-limit"]');
+              if (rtLimitEl) rtLimitEl.textContent = `Limit: ${rtLimitPerBucket.toFixed(2)} / ${effectiveBucket}s`;
+            }
+
+            const overrideEl = card.querySelector('.override');
+            if (overrideEl) {
+              overrideEl.innerHTML = `<span>Override</span> ${override
+                ? `<span class="pill">Remaining <strong>${escapeHtml(override.remaining)}</strong> | Reset <strong>${escapeHtml(override.reset)}s</strong></span>`
+                : "<strong>None</strong>"}`;
+            }
+          });
+        }
+
+        requestAnimationFrame(renderCharts);
+      };
+
+      renderCharts();
+
+      const source = new EventSource(streamUrl);
+      source.addEventListener("metrics", (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          renderPayload(payload);
+        } catch (e) {
+          // ignore malformed events
+        }
+      });
+    </script>
+  </body>
+</html>

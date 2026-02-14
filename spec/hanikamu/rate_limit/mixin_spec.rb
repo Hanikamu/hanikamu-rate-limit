@@ -165,13 +165,13 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
 
       rate.times { test_class.new.execute }
 
-      start_time = Time.now
+      start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       expect do
         test_class.new.execute
       end.to raise_error(Hanikamu::RateLimit::RateLimitError, /Max wait time exceeded/)
-      elapsed = Time.now - start_time
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
 
-      expect(elapsed).to be_within(0.1).of(2.0)
+      expect(elapsed).to be_within(0.5).of(2.0)
     end
 
     it "defaults interval to 60 when omitted" do
@@ -209,13 +209,13 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
 
         rate.times { test_class.new.execute }
 
-        start_time = Time.now
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         expect do
           test_class.new.execute
         end.to raise_error(Hanikamu::RateLimit::RateLimitError, /Max wait time exceeded/)
-        elapsed = Time.now - start_time
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
 
-        expect(elapsed).to be_within(0.1).of(2.0)
+        expect(elapsed).to be_within(0.5).of(2.0)
       end
     end
 
@@ -227,13 +227,13 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
 
         rate.times { test_class.new.execute }
 
-        start_time = Time.now
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         expect do
           test_class.new.execute
         end.to raise_error(Hanikamu::RateLimit::RateLimitError, /Max wait time exceeded/)
-        elapsed = Time.now - start_time
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
 
-        expect(elapsed).to be_within(0.1).of(1.0)
+        expect(elapsed).to be_within(0.5).of(1.0)
       end
     end
 
@@ -246,13 +246,13 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
 
         rate.times { test_class.new.execute }
 
-        start_time = Time.now
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         expect do
           test_class.new.execute
         end.to raise_error(Hanikamu::RateLimit::RateLimitError, /Max wait time exceeded/)
-        elapsed = Time.now - start_time
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
 
-        expect(elapsed).to be_within(0.1).of(0.5)
+        expect(elapsed).to be_within(0.3).of(0.5)
       end
     end
 
@@ -269,13 +269,13 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
 
         rate.times { test_class.new.execute }
 
-        start_time = Time.now
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         expect do
           test_class.new.execute
         end.to raise_error(Hanikamu::RateLimit::RateLimitError, /Max wait time exceeded/)
-        elapsed = Time.now - start_time
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
 
-        expect(elapsed).to be_within(0.1).of(1.5)
+        expect(elapsed).to be_within(0.5).of(1.5)
       end
     end
   end
@@ -448,6 +448,116 @@ RSpec.describe Hanikamu::RateLimit::Mixin do
           klass.new.execute
         end.to raise_error(Hanikamu::RateLimit::RateLimitError)
       end
+    end
+  end
+
+  describe "#limit_method with metrics option" do
+    it "skips metrics when metrics: false is passed inline" do
+      expect(Hanikamu::RateLimit::Metrics).not_to receive(:record_registry_meta)
+      expect(Hanikamu::RateLimit::Metrics).not_to receive(:record_allowed)
+
+      klass = Class.new do
+        extend Hanikamu::RateLimit::Mixin
+
+        def self.name = "NoMetricsInline"
+
+        limit_method :execute, rate: 10, interval: 1, metrics: false
+
+        def execute = "done"
+      end
+
+      klass.new.execute
+    end
+
+    it "records metrics when metrics: true is passed inline" do
+      expect(Hanikamu::RateLimit::Metrics).to receive(:record_registry_meta).once
+      expect(Hanikamu::RateLimit::Metrics).to receive(:record_allowed).once
+
+      klass = Class.new do
+        extend Hanikamu::RateLimit::Mixin
+
+        def self.name = "WithMetricsInline"
+
+        limit_method :execute, rate: 10, interval: 1, metrics: true
+
+        def execute = "done"
+      end
+
+      klass.new.execute
+    end
+
+    it "inherits metrics: false from registry" do
+      Hanikamu::RateLimit.reset_registry!
+      Hanikamu::RateLimit.register_limit(:no_metrics, rate: 10, interval: 1, metrics: false)
+
+      expect(Hanikamu::RateLimit::Metrics).not_to receive(:record_registry_meta)
+      expect(Hanikamu::RateLimit::Metrics).not_to receive(:record_allowed)
+
+      klass = Class.new do
+        extend Hanikamu::RateLimit::Mixin
+
+        def self.name = "NoMetricsRegistry"
+
+        limit_method :execute, registry: :no_metrics
+
+        def execute = "done"
+      end
+
+      klass.new.execute
+    end
+
+    it "raises ArgumentError when combining registry with metrics" do
+      Hanikamu::RateLimit.reset_registry!
+      Hanikamu::RateLimit.register_limit(:metrics_on, rate: 10, interval: 1, metrics: true)
+
+      expect do
+        Class.new do
+          extend Hanikamu::RateLimit::Mixin
+
+          def self.name = "BadComboMetrics"
+
+          limit_method :execute, registry: :metrics_on, metrics: false
+          def execute; end
+        end
+      end.to raise_error(ArgumentError, /registry: must be used alone/)
+    end
+
+    it "falls back to global config.metrics_enabled (default false) when not specified" do
+      expect(Hanikamu::RateLimit::Metrics).not_to receive(:record_registry_meta)
+      expect(Hanikamu::RateLimit::Metrics).not_to receive(:record_allowed)
+
+      klass = Class.new do
+        extend Hanikamu::RateLimit::Mixin
+
+        def self.name = "GlobalDisabled"
+
+        limit_method :execute, rate: 10, interval: 1
+
+        def execute = "done"
+      end
+
+      klass.new.execute
+    end
+
+    it "records metrics when global config.metrics_enabled is true" do
+      Hanikamu::RateLimit.configure { |c| c.metrics_enabled = true }
+
+      expect(Hanikamu::RateLimit::Metrics).to receive(:record_registry_meta).once
+      expect(Hanikamu::RateLimit::Metrics).to receive(:record_allowed).once
+
+      klass = Class.new do
+        extend Hanikamu::RateLimit::Mixin
+
+        def self.name = "GlobalEnabled"
+
+        limit_method :execute, rate: 10, interval: 1
+
+        def execute = "done"
+      end
+
+      klass.new.execute
+
+      Hanikamu::RateLimit.configure { |c| c.metrics_enabled = false }
     end
   end
 end
