@@ -33,7 +33,7 @@ Requires Ruby 4.0 or later.
 
 ```ruby
 # Gemfile
-gem "hanikamu-rate-limit", "~> 0.2.0"
+gem "hanikamu-rate-limit", "~> 0.2"
 ```
 
 ```bash
@@ -44,11 +44,13 @@ bundle install
 
 ```ruby
 Hanikamu::RateLimit.configure do |config|
-  config.redis_url = ENV.fetch("REDIS_URL")
-  config.check_interval = 0.25
-  config.max_wait_time = 1.5
+  config.redis_url       = ENV.fetch("REDIS_URL")
+  config.metrics_enabled = true  # enable the UI dashboard (optional)
 
-  config.register_limit(:external_api, rate: 5, interval: 0.5, check_interval: 0.5, max_wait_time: 5)
+  config.register_limit(:external_api,
+    rate: 5, interval: 0.5,
+    check_interval: 0.5, max_wait_time: 5
+  )
 end
 ```
 
@@ -74,21 +76,42 @@ MyService.new.execute
 
 ## Configuration
 
-Available settings:
+All settings are configured inside the `configure` block:
 
-- `redis_url`: Redis connection URL (required).
-- `check_interval`: default sleep interval between retries (default: 0.5 seconds).
-- `max_wait_time`: max time to wait before raising (default: 2.0 seconds).
-- `metrics_enabled`: enable metrics collection for the UI dashboard (default: `false`). Set to `true` to enable the dashboard. Can be overridden per-limit (see below).
-- `register_limit`: define a named limit shared across classes.
+```ruby
+Hanikamu::RateLimit.configure do |config|
+  config.redis_url        = ENV.fetch("REDIS_URL")
+  config.check_interval   = 0.25
+  config.max_wait_time    = 1.5
+  config.metrics_enabled  = true   # required for the UI dashboard
 
-Registered limit options:
+  config.register_limit(:external_api,
+    rate: 5, interval: 0.5,
+    check_interval: 0.5, max_wait_time: 5
+  )
+end
+```
 
-- `rate` and `interval` (required).
-- `check_interval`, `max_wait_time` (optional).
-- `metrics`: enable/disable metrics for this limit (optional, inherits from `metrics_enabled`).
+### Global settings
 
-`key_prefix` is no longer configurable for registered limits; registry keys are derived from the registry name.
+| Setting              | Default | Description                                                              |
+| -------------------- | ------- | ------------------------------------------------------------------------ |
+| `redis_url`          | —       | Redis connection URL (**required**).                                     |
+| `check_interval`     | `0.5`   | Default sleep interval (seconds) between retries when a limit is hit.    |
+| `max_wait_time`      | `2.0`   | Max time (seconds) to wait before raising `RateLimitError`.              |
+| `metrics_enabled`    | `false` | Enable metrics collection. **Must be `true`** for the UI dashboard.      |
+
+### Registered limit options
+
+Define named limits shared across classes with `config.register_limit`:
+
+| Option           | Required | Description                                                        |
+| ---------------- | -------- | ------------------------------------------------------------------ |
+| `rate`           | Yes      | Max number of requests allowed per `interval`.                     |
+| `interval`       | Yes      | Time window in seconds.                                            |
+| `check_interval` | No       | Override global `check_interval` for this limit.                   |
+| `max_wait_time`  | No       | Override global `max_wait_time` for this limit.                    |
+| `metrics`        | No       | Override `metrics_enabled` for this limit (`true` / `false`).      |
 
 ## Usage
 
@@ -300,13 +323,13 @@ the dashboard, the JSON metrics endpoint, and the SSE stream.
 
 The dashboard uses **Server-Sent Events** for real-time updates instead of
 polling. The browser connects to the `/stream` endpoint and receives metrics
-pushes every 2 seconds. Connections are automatically closed after 5 minutes
+pushes every 2 seconds. Connections are automatically closed after 1 minute
 to prevent thread exhaustion; the browser reconnects transparently.
 
 #### Threading implications
 
 Each SSE connection holds a Puma (or other threaded server) thread for up to
-5 minutes. To prevent thread pool exhaustion, the engine limits concurrent SSE
+1 minute. To prevent thread pool exhaustion, the engine limits concurrent SSE
 connections (default: **10**). When the limit is reached, new stream requests
 receive a `503 Service Unavailable` response and the browser retries
 automatically via the EventSource reconnect mechanism.
@@ -329,13 +352,17 @@ end
 
 - **Summary cards** — limits tracked, window size, bucket size, timestamp.
 - **Redis info cards** — Redis version, memory usage, peak memory, connected
-  clients. Updated live via SSE (similar to Sidekiq's server info panel).
+  clients. Updated live via SSE.
 - **Per-limit cards** with:
   - Current rate limit, hits/sec, and blocked/sec stats.
   - Rolling counters for 5 minutes, 24 hours, and all-time totals
     (allowed and blocked).
   - **24-hour chart** — allowed requests and limit line over the last day.
-  - **5-minute chart** — allowed requests and limit line at 1-second resolution.
+    Time periods with blocked calls are highlighted with a red background band.
+  - **5-minute chart** — allowed requests and limit line with interval-aware
+    bucket aggregation. For example, a "1 per 5s" limit uses 5-second buckets
+    so the threshold line matches the actual allowed count per bucket.
+    Blocked periods are highlighted with a red background band.
   - **Override pill** — shows remaining requests and reset time when a dynamic
     override is active.
 

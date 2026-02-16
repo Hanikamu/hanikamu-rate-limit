@@ -24,7 +24,7 @@ module Hanikamu
         end
 
         SSE_INTERVAL = 2
-        SSE_TIMEOUT = 300 # disconnect after 5 minutes, client will auto-reconnect
+        SSE_TIMEOUT = 60 # disconnect after 60 s; EventSource auto-reconnects
 
         @sse_connections = Concurrent::AtomicFixnum.new(0)
 

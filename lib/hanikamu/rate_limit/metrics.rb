@@ -190,7 +190,8 @@ module Hanikamu
       def entry_from_meta(limit_key, meta)
         { limit_key: limit_key, rate: meta.fetch("rate").to_i, interval: meta.fetch("interval").to_f,
           klass_name: meta["klass_name"], method_name: meta["method"],
-          registry: meta["registry"], key_prefix: meta.fetch("key_prefix") }
+          registry: meta["registry"], key_prefix: meta.fetch("key_prefix"),
+          metrics_enabled: resolve_effective_metrics(meta["registry"]) }
       end
 
       def build_registry_entries
@@ -200,7 +201,8 @@ module Hanikamu
           rate = cfg.fetch(:rate).to_i
           interval = cfg.fetch(:interval).to_f
           { limit_key: build_limit_key(key_prefix, rate, interval),
-            rate: rate, interval: interval, registry: reg_key, key_prefix: key_prefix }
+            rate: rate, interval: interval, registry: reg_key, key_prefix: key_prefix,
+            metrics_enabled: resolve_effective_metrics(reg_key) }
         rescue Dry::Container::Error, KeyError
           nil
         end
@@ -291,6 +293,7 @@ module Hanikamu
         { "limit_key" => entry[:limit_key], "rate" => entry[:rate], "interval" => entry[:interval],
           "klass_name" => entry[:klass_name], "method" => entry[:method_name],
           "registry" => entry[:registry]&.to_s, "key_prefix" => entry[:key_prefix],
+          "metrics_enabled" => entry[:metrics_enabled],
           "current_count" => current_count,
           "current_remaining" => [entry[:rate] - current_count, 0].max }
       end
@@ -573,6 +576,16 @@ module Hanikamu
 
       def build_limit_key(key_prefix, rate, interval)
         "#{key_prefix}:#{rate}:#{interval}"
+      end
+
+      def resolve_effective_metrics(registry_key)
+        return Hanikamu::RateLimit.config.metrics_enabled if registry_key.nil?
+
+        cfg = Hanikamu::RateLimit.fetch_limit(registry_key.to_sym)
+        flag = cfg[:metrics]
+        flag.nil? ? Hanikamu::RateLimit.config.metrics_enabled : flag
+      rescue Dry::Container::Error, KeyError, ArgumentError
+        Hanikamu::RateLimit.config.metrics_enabled
       end
 
       def limit_meta_key(limit_key)        = "#{LIMIT_META_PREFIX}#{limit_key}"
