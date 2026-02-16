@@ -101,8 +101,16 @@
 
       .card-header {
         display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+      }
+
+      .card-header-left {
+        display: flex;
         flex-direction: column;
         gap: 4px;
+        min-width: 0;
       }
 
       .card-title {
@@ -115,6 +123,27 @@
         font-size: 12px;
         color: var(--muted);
         word-break: break-all;
+      }
+
+      .metrics-badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        padding: 2px 7px;
+        border-radius: 6px;
+        line-height: 1.4;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .metrics-badge--on {
+        background: rgba(34, 197, 94, 0.15);
+        color: #16a34a;
+      }
+      .metrics-badge--off {
+        background: rgba(161, 161, 170, 0.15);
+        color: #71717a;
       }
 
       .pill {
@@ -326,8 +355,11 @@
           <% @presenter.limits.each do |limit| %>
             <article class="card">
               <div class="card-header">
-                <div class="card-title"><%= limit.identifier %></div>
-                <div class="card-meta"><%= limit.key_prefix %></div>
+                <div class="card-header-left">
+                  <div class="card-title"><%= limit.identifier %></div>
+                  <div class="card-meta"><%= limit.key_prefix %></div>
+                </div>
+                <span class="metrics-badge metrics-badge--<%= limit.metrics_enabled? ? 'on' : 'off' %>" data-stat="metrics-badge"><%= limit.metrics_enabled? ? 'Enabled' : 'Disabled' %></span>
               </div>
 
               <div class="stats">
@@ -664,8 +696,11 @@
             return `
               <article class="card" data-limit-key="${escapeHtml(limit.key_prefix)}">
                 <div class="card-header">
-                  <div class="card-title">${escapeHtml(identifier)}</div>
-                  <div class="card-meta">${escapeHtml(limit.key_prefix)}</div>
+                  <div class="card-header-left">
+                    <div class="card-title">${escapeHtml(identifier)}</div>
+                    <div class="card-meta">${escapeHtml(limit.key_prefix)}</div>
+                  </div>
+                  <span class="metrics-badge metrics-badge--${limit.metrics_enabled ? 'on' : 'off'}" data-stat="metrics-badge">${limit.metrics_enabled ? 'Enabled' : 'Disabled'}</span>
                 </div>
                 <div class="stats">
                   <div class="stats-row">
@@ -756,6 +791,13 @@
               if (rtLimitEl) rtLimitEl.textContent = `Limit: ${rtLimitPerBucket.toFixed(2)} / ${effectiveBucket}s`;
             }
 
+            const badgeEl = card.querySelector('[data-stat="metrics-badge"]');
+            if (badgeEl) {
+              const metricsOn = !!limit.metrics_enabled;
+              badgeEl.className = `metrics-badge metrics-badge--${metricsOn ? 'on' : 'off'}`;
+              badgeEl.textContent = metricsOn ? 'Enabled' : 'Disabled';
+            }
+
             const overrideEl = card.querySelector('.override');
             if (overrideEl) {
               overrideEl.innerHTML = `<span>Override</span> ${override
@@ -779,6 +821,11 @@
           // ignore malformed events
         }
       });
+
+      // Close the SSE connection before reload/navigation so the
+      // server-side thread is freed promptly (within SSE_INTERVAL).
+      // This prevents thread starvation on servers with few threads.
+      window.addEventListener("beforeunload", () => source.close());
     </script>
   </body>
 </html>

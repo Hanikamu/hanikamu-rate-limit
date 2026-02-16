@@ -552,4 +552,140 @@ RSpec.describe Hanikamu::RateLimit::Metrics do
       expect(merged.length).to eq(2)
     end
   end
+
+  describe "metrics_enabled flag" do
+    describe "recorded entries (entry_from_meta)" do
+      it "inherits global metrics_enabled when no registry is set" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = true }
+        described_class.record_limit(limit_key, {
+                                       "rate" => "5", "interval" => "60.0",
+                                       "key_prefix" => "test_prefix",
+                                       "klass_name" => "TestClass", "method" => "call"
+                                     })
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["limit_key"] == limit_key }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be true
+      end
+
+      it "returns false when global metrics_enabled is false and no registry" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = false }
+        described_class.record_limit(limit_key, {
+                                       "rate" => "5", "interval" => "60.0",
+                                       "key_prefix" => "test_prefix"
+                                     })
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["limit_key"] == limit_key }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be false
+      end
+
+      it "inherits per-registry metrics override (true) over global false" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = false }
+        Hanikamu::RateLimit.register_limit(:metrics_on, rate: 5, interval: 10, metrics: true)
+        cfg = Hanikamu::RateLimit.fetch_limit(:metrics_on)
+        lk = described_class.build_limit_key(cfg[:key_prefix], 5, 10.0)
+
+        described_class.record_limit(lk, {
+                                       "rate" => "5", "interval" => "10.0",
+                                       "key_prefix" => cfg[:key_prefix],
+                                       "registry" => "metrics_on"
+                                     })
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["limit_key"] == lk }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be true
+      end
+
+      it "inherits per-registry metrics override (false) over global true" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = true }
+        Hanikamu::RateLimit.register_limit(:metrics_off, rate: 5, interval: 10, metrics: false)
+        cfg = Hanikamu::RateLimit.fetch_limit(:metrics_off)
+        lk = described_class.build_limit_key(cfg[:key_prefix], 5, 10.0)
+
+        described_class.record_limit(lk, {
+                                       "rate" => "5", "interval" => "10.0",
+                                       "key_prefix" => cfg[:key_prefix],
+                                       "registry" => "metrics_off"
+                                     })
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["limit_key"] == lk }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be false
+      end
+    end
+
+    describe "registry entries (build_registry_entries)" do
+      it "uses per-registry metrics: true over global false" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = false }
+        Hanikamu::RateLimit.register_limit(:reg_on, rate: 3, interval: 5, metrics: true)
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["registry"] == "reg_on" }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be true
+      end
+
+      it "uses per-registry metrics: false over global true" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = true }
+        Hanikamu::RateLimit.register_limit(:reg_off, rate: 3, interval: 5, metrics: false)
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["registry"] == "reg_off" }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be false
+      end
+
+      it "falls back to global when per-registry metrics is nil" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = true }
+        Hanikamu::RateLimit.register_limit(:reg_nil, rate: 3, interval: 5)
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["registry"] == "reg_nil" }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be true
+      end
+    end
+
+    describe "stale / unknown registry resilience" do
+      it "falls back to global when recorded meta references a removed registry" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = true }
+
+        described_class.record_limit(limit_key, {
+                                       "rate" => "5", "interval" => "60.0",
+                                       "key_prefix" => "test_prefix",
+                                       "registry" => "removed_registry"
+                                     })
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["limit_key"] == limit_key }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be true
+      end
+
+      it "returns false fallback when global is false and registry is unknown" do
+        Hanikamu::RateLimit.configure { |c| c.metrics_enabled = false }
+
+        described_class.record_limit(limit_key, {
+                                       "rate" => "5", "interval" => "60.0",
+                                       "key_prefix" => "test_prefix",
+                                       "registry" => "nonexistent_registry"
+                                     })
+
+        limits = described_class.limits_snapshot
+        entry = limits.find { |l| l["limit_key"] == limit_key }
+        expect(entry).not_to be_nil
+        expect(entry["metrics_enabled"]).to be false
+      end
+
+      it "does not raise when resolve_effective_metrics encounters an unknown registry" do
+        expect { described_class.send(:resolve_effective_metrics, "totally_unknown") }
+          .not_to raise_error
+      end
+    end
+  end
 end

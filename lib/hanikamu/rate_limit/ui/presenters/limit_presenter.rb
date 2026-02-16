@@ -128,6 +128,12 @@ module Hanikamu
           override&.fetch("reset", nil)
         end
 
+        # ── Metrics ──────────────────────────────────────────────
+
+        def metrics_enabled?
+          data.fetch("metrics_enabled", false)
+        end
+
         private
 
         def penultimate_or_last(series)
