@@ -1,11 +1,30 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-02-17
 
 ### Added
 
-- Mountable UI dashboard for live rate limit status and 24-hour history.
-- Metrics time-series collection for allowed/blocked counts and override status.
+- **UI dashboard** — mountable Rails engine (`Hanikamu::RateLimit::UI::Engine`) with real-time Server-Sent Events (SSE) streaming.
+  - Summary cards — limits tracked, window size, bucket size, timestamp.
+  - Redis info cards — version, memory usage, peak memory, connected clients. Updated live via SSE.
+  - Per-limit cards with current rate, hits/sec, blocked/sec stats.
+  - Rolling counters for 5 minutes, 24 hours, and all-time totals (allowed and blocked).
+  - 24-hour chart with allowed requests, limit line, and blocked-period red background bands.
+  - 5-minute chart with interval-aware bucket aggregation and blocked-period highlighting.
+  - Override pill showing remaining requests and reset time when a dynamic override is active.
+  - Metrics enabled/disabled badge per limit card.
+- **`ui_auth`** — deny-by-default authentication hook for the dashboard. All endpoints return `403 Forbidden` until configured.
+- **`ui_max_sse_connections`** — configurable limit on concurrent SSE connections (default: 10). Returns `503 Service Unavailable` when exhausted.
+- **Per-limit `metrics:` option** on `register_limit` to override global `metrics_enabled`.
+- **Per-method `metrics:` option** on inline `limit_method` calls (cannot be combined with `registry:`).
+- Metrics time-series collection for allowed/blocked counts and override status with TTLs on all keys.
+- Pipelined Redis reads for efficient dashboard snapshots.
+- Dashboard payload caching (1-second TTL) and Redis info caching (10-second TTL).
+- `beforeunload` SSE cleanup — browser closes the EventSource before page reload to free server threads promptly.
+- SSE connections auto-close after 1 minute; the browser reconnects transparently.
+- XSS prevention with `escapeHtml` and `safeNum` helpers in dashboard JavaScript.
+- Chart.js 4.4.8 loaded with Subresource Integrity (SRI) pinning.
+- System font stack (no external font requests).
 
 ## 0.2.0 - 2026-02-11
 
