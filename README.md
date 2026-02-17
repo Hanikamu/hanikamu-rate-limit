@@ -33,7 +33,7 @@ Requires Ruby 4.0 or later.
 
 ```ruby
 # Gemfile
-gem "hanikamu-rate-limit", "~> 0.2"
+gem "hanikamu-rate-limit", "~> 0.3"
 ```
 
 ```bash
