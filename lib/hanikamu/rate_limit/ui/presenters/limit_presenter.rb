@@ -1,9 +1,13 @@
 # frozen_string_literal: true
 
+require_relative "override_helpers"
+
 module Hanikamu
   module RateLimit
     module UI
       class LimitPresenter
+        include OverrideHelpers
+
         EMPTY_HISTORY = { "allowed" => [], "blocked" => [], "buckets" => [] }.freeze
         EMPTY_LIFETIME = { "allowed" => 0, "blocked" => 0 }.freeze
 
@@ -108,24 +112,6 @@ module Hanikamu
 
         def lifetime_blocked
           lifetime.fetch("blocked", 0)
-        end
-
-        # ── Override ─────────────────────────────────────────────
-
-        def override
-          data["override"]
-        end
-
-        def override?
-          !override.nil?
-        end
-
-        def override_remaining
-          override&.fetch("remaining", nil)
-        end
-
-        def override_reset
-          override&.fetch("reset", nil)
         end
 
         # ── Metrics ──────────────────────────────────────────────

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.2 - 2026-02-17
+
+### Fixed
+
+- **Short-reset overrides now visible in the dashboard.** Overrides with a very short reset (e.g. 2 seconds) previously expired before the SSE interval could push them, so the pill always showed "None". Expired overrides are now returned with `active: false` and displayed as a dimmed pill with a relative timestamp ("Registered 10s ago").
+- **Override pill no longer flickers** on SSE updates. The update path now patches the existing DOM element in-place instead of replacing `innerHTML`, and the "Registered" prefix slides in/out with a CSS transition.
+- Expired override pill uses neutral grey styling instead of the red accent colour.
+
+### Changed
+
+- Extracted `OverrideHelpers` module from `LimitPresenter` to keep class size under RuboCop limits.
+- Refactored `resolve_override` into `live_override_from` and `stored_override_from` for clarity.
+- Override snapshot hashes now always include an `"active"` boolean key.
+- Added `override_active?`, `override_updated_at`, and `override_age_label` to `LimitPresenter`.
+- Added footer with gem version and GitHub link to the dashboard.
+
 ## 0.3.1 - 2026-02-17
 
 ### Fixed

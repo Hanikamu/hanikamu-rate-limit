@@ -305,6 +305,11 @@ RSpec.describe Hanikamu::RateLimit::Metrics do
         expect(snapshot["remaining"]).to eq(25)
         expect(snapshot["reset"]).to be > 0
       end
+
+      it "returns active true when override has not expired" do
+        snapshot = described_class.override_snapshot("stored_reg")
+        expect(snapshot).to include("active" => true)
+      end
     end
 
     context "when stored override has expired" do
@@ -317,8 +322,9 @@ RSpec.describe Hanikamu::RateLimit::Metrics do
                    })
       end
 
-      it "returns nil" do
-        expect(described_class.override_snapshot("expired_reg")).to be_nil
+      it "returns data with active false" do
+        result = described_class.override_snapshot("expired_reg")
+        expect(result).to include("remaining" => 25, "reset" => 300, "active" => false)
       end
     end
 

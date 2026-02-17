@@ -156,6 +156,21 @@
         color: var(--accent);
         font-size: 12px;
         font-weight: 600;
+        transition: opacity 0.3s ease, border-color 0.3s ease;
+      }
+
+      .pill-age {
+        display: inline-flex;
+        overflow: hidden;
+        max-width: 0;
+        opacity: 0;
+        transition: max-width 0.4s ease, opacity 0.3s ease;
+        white-space: nowrap;
+      }
+
+      .pill--expired .pill-age {
+        max-width: 250px;
+        opacity: 1;
       }
 
       .stats {
@@ -278,6 +293,17 @@
         font-weight: 600;
       }
 
+      .pill--expired {
+        opacity: 0.55;
+        border: 1px dashed var(--line);
+        background: rgba(161, 161, 170, 0.10);
+        color: var(--muted);
+      }
+
+      .pill--expired strong {
+        color: var(--muted);
+      }
+
       .empty {
         padding: 40px 20px;
         background: var(--card);
@@ -285,6 +311,23 @@
         border: 1px dashed var(--line);
         text-align: center;
         color: var(--muted);
+      }
+
+      .page-footer {
+        text-align: center;
+        padding: 32px 0 16px;
+        color: #6b7280;
+        font-size: 0.8rem;
+      }
+
+      .page-footer a {
+        color: #6b7280;
+        text-decoration: none;
+      }
+
+      .page-footer a:hover {
+        color: #374151;
+        text-decoration: underline;
       }
 
       @media (max-width: 720px) {
@@ -415,7 +458,7 @@
               <div class="override">
                 <span>Override</span>
                 <% if limit.override? %>
-                  <span class="pill">Remaining <strong><%= limit.override_remaining %></strong> | Reset <strong><%= limit.override_reset %>s</strong></span>
+                  <span class="pill<%= ' pill--expired' unless limit.override_active? %>"><span class="pill-age">Registered&nbsp;<strong data-override-age><%= limit.override_age_label unless limit.override_active? %></strong>&nbsp;— </span>Remaining <strong data-override-remaining><%= limit.override_remaining %></strong> | Reset <strong data-override-reset><%= limit.override_reset %>s</strong></span>
                 <% else %>
                   <strong>None</strong>
                 <% end %>
@@ -431,6 +474,14 @@
       const streamUrl = `${window.location.origin}${metricsBase}stream`;
       const grid = document.getElementById("limits-grid");
       const emptyState = document.getElementById("empty-state");
+
+      const timeAgo = (unixTs) => {
+        const seconds = Math.max(0, Math.floor(Date.now() / 1000) - Number(unixTs || 0));
+        if (seconds < 60) return `${seconds}s ago`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+        return `${Math.floor(seconds / 86400)}d ago`;
+      };
 
       const escapeHtml = (value) => {
         const str = String(value ?? "");
@@ -742,7 +793,9 @@
                 </div>
                 <div class="override">
                   <span>Override</span>
-                  ${override ? `<span class="pill">Remaining <strong>${escapeHtml(override.remaining)}</strong> | Reset <strong>${escapeHtml(override.reset)}s</strong></span>` : "<strong>None</strong>"}
+                  ${override
+                    ? `<span class="pill${override.active ? '' : ' pill--expired'}"><span class="pill-age">Registered&nbsp;<strong data-override-age>${override.active ? '' : timeAgo(override.updated_at)}</strong>&nbsp;— </span>Remaining <strong data-override-remaining>${escapeHtml(override.remaining)}</strong> | Reset <strong data-override-reset>${escapeHtml(override.reset)}s</strong></span>`
+                    : "<strong>None</strong>"}
                 </div>
               </article>
             `;
@@ -800,9 +853,28 @@
 
             const overrideEl = card.querySelector('.override');
             if (overrideEl) {
-              overrideEl.innerHTML = `<span>Override</span> ${override
-                ? `<span class="pill">Remaining <strong>${escapeHtml(override.remaining)}</strong> | Reset <strong>${escapeHtml(override.reset)}s</strong></span>`
-                : "<strong>None</strong>"}`;
+              if (override) {
+                let pillEl = overrideEl.querySelector('.pill');
+                if (!pillEl) {
+                  overrideEl.innerHTML = `<span>Override</span> <span class="pill${override.active ? '' : ' pill--expired'}"><span class="pill-age">Registered&nbsp;<strong data-override-age>${override.active ? '' : timeAgo(override.updated_at)}</strong>&nbsp;— </span>Remaining <strong data-override-remaining>${escapeHtml(override.remaining)}</strong> | Reset <strong data-override-reset>${escapeHtml(override.reset)}s</strong></span>`;
+                } else {
+                  pillEl.classList.toggle('pill--expired', !override.active);
+                  const ageEl = pillEl.querySelector('[data-override-age]');
+                  if (!override.active) {
+                    if (ageEl) ageEl.textContent = timeAgo(override.updated_at);
+                  } else {
+                    if (ageEl) ageEl.textContent = '';
+                  }
+                  const remEl = pillEl.querySelector('[data-override-remaining]');
+                  if (remEl) remEl.textContent = override.remaining;
+                  const resetEl = pillEl.querySelector('[data-override-reset]');
+                  if (resetEl) resetEl.textContent = `${override.reset}s`;
+                }
+              } else {
+                if (overrideEl.querySelector('.pill')) {
+                  overrideEl.innerHTML = '<span>Override</span> <strong>None</strong>';
+                }
+              }
             }
           });
         }
@@ -827,5 +899,9 @@
       // This prevents thread starvation on servers with few threads.
       window.addEventListener("beforeunload", () => source.close());
     </script>
+
+    <footer class="page-footer">
+      <a href="https://github.com/Hanikamu/hanikamu-rate-limit" target="_blank" rel="noopener noreferrer">hanikamu-rate-limit</a> v<%= Hanikamu::RateLimit::VERSION %>
+    </footer>
   </body>
 </html>

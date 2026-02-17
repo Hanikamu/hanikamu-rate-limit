@@ -333,22 +333,30 @@ module Hanikamu
       end
 
       def resolve_override(live_remaining, live_ttl, stored_meta)
-        # Try live override first
-        if live_remaining && live_ttl&.positive?
-          remaining = Integer(live_remaining, exception: false)
-          if remaining
-            return { "remaining" => remaining, "reset" => live_ttl,
-                     "updated_at" => Time.now.to_i }
-          end
-        end
-        # Fall back to stored meta
+        live_override_from(live_remaining, live_ttl) ||
+          stored_override_from(stored_meta)
+      end
+
+      def live_override_from(remaining_raw, ttl)
+        return nil unless remaining_raw && ttl&.positive?
+
+        remaining = Integer(remaining_raw, exception: false)
+        return nil unless remaining
+
+        { "remaining" => remaining, "reset" => ttl,
+          "updated_at" => Time.now.to_i, "active" => true }
+      end
+
+      def stored_override_from(stored_meta)
         return nil if stored_meta.nil? || stored_meta.empty?
 
         remaining_reset = compute_remaining_reset(stored_meta)
-        return nil unless remaining_reset
+        updated_at = stored_meta["updated_at"].to_i
+        active = !remaining_reset.nil?
 
-        { "remaining" => stored_meta["remaining"].to_i, "reset" => remaining_reset,
-          "updated_at" => stored_meta["updated_at"].to_i }
+        { "remaining" => stored_meta["remaining"].to_i,
+          "reset" => remaining_reset || stored_meta["reset"].to_i,
+          "updated_at" => updated_at, "active" => active }
       end
 
       def parse_override_history(raw, window, bucket_seconds)
@@ -407,7 +415,7 @@ module Hanikamu
         remaining = Integer(remaining_value, exception: false)
         return nil if remaining.nil?
 
-        { "remaining" => remaining, "reset" => ttl, "updated_at" => Time.now.to_i }
+        { "remaining" => remaining, "reset" => ttl, "updated_at" => Time.now.to_i, "active" => true }
       end
 
       def stored_override(registry)
@@ -415,10 +423,16 @@ module Hanikamu
         return nil if meta.empty?
 
         remaining_reset = compute_remaining_reset(meta)
-        return nil unless remaining_reset
+        updated_at = meta["updated_at"].to_i
 
-        { "remaining" => meta["remaining"].to_i, "reset" => remaining_reset,
-          "updated_at" => meta["updated_at"].to_i }
+        if remaining_reset
+          { "remaining" => meta["remaining"].to_i, "reset" => remaining_reset,
+            "updated_at" => updated_at, "active" => true }
+        else
+          { "remaining" => meta["remaining"].to_i,
+            "reset" => meta["reset"].to_i,
+            "updated_at" => updated_at, "active" => false }
+        end
       end
 
       def compute_remaining_reset(meta)
