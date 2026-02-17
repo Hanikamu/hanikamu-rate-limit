@@ -209,6 +209,25 @@ RSpec.describe Hanikamu::RateLimit do
       expect(ttl).to be <= 30
     end
 
+    it "unwraps array values (e.g. from HTTParty headers.to_h)" do
+      result = described_class.register_temporary_limit(:external_api, remaining: ["99"], reset: ["10"])
+      expect(result).to be(true)
+
+      key = described_class.override_key_for(:external_api)
+      expect(redis.get(key).to_i).to eq(99)
+      ttl = redis.ttl(key)
+      expect(ttl).to be > 0
+      expect(ttl).to be <= 10
+    end
+
+    it "accepts plain string values" do
+      result = described_class.register_temporary_limit(:external_api, remaining: "175", reset: "60")
+      expect(result).to be(true)
+
+      key = described_class.override_key_for(:external_api)
+      expect(redis.get(key).to_i).to eq(175)
+    end
+
     it "reuses the Redis client across calls" do
       pipeline_double = instance_double(Redis, set: true, hset: true, expire: true)
       redis_double = instance_double(Redis, set: true, close: nil, del: nil, hset: true, expire: true)

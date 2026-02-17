@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 - 2026-02-17
+
+### Fixed
+
+- `register_temporary_limit` now unwraps array values for `remaining:` and `reset:` (e.g. `["99"]` from HTTParty's `headers.to_h`). Previously these were silently rejected as non-numeric.
+
 ## 0.3.0 - 2026-02-17
 
 ### Added

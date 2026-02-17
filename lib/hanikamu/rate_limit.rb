@@ -50,17 +50,14 @@ module Hanikamu
 
       def register_temporary_limit(name, remaining:, reset:)
         cfg = fetch_limit(name) # raise if not registered
-        remaining_value = Integer(remaining, exception: false)
-        reset_value = Integer(reset, exception: false)
+        remaining_value = Integer(Array(remaining).first, exception: false)
+        reset_value = Integer(Array(reset).first, exception: false)
         return false if remaining_value.nil? || reset_value.nil?
         return false if remaining_value.negative? || reset_value <= 0
 
         key = override_key_for(name)
         redis_client.set(key, remaining_value, ex: reset_value)
-
-        metrics_flag = cfg[:metrics]
-        effective_metrics = metrics_flag.nil? ? config.metrics_enabled : metrics_flag
-        Metrics.record_override(normalize_name(name), remaining_value, reset_value) if effective_metrics
+        record_override_metrics(cfg, name, remaining_value, reset_value)
         true
       end
 
@@ -100,6 +97,12 @@ module Hanikamu
 
       def redis_client
         @redis_client ||= Redis.new(url: config.redis_url)
+      end
+
+      def record_override_metrics(cfg, name, remaining_value, reset_value)
+        metrics_flag = cfg[:metrics]
+        effective = metrics_flag.nil? ? config.metrics_enabled : metrics_flag
+        Metrics.record_override(normalize_name(name), remaining_value, reset_value) if effective
       end
 
       def normalize_registry_options(name, rate:, interval:, check_interval:, max_wait_time:, metrics:)
