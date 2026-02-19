@@ -3,6 +3,7 @@
 require "dry/configurable"
 require "dry/container"
 require "hanikamu/rate_limit/errors"
+require "hanikamu/rate_limit/job_retry"
 require "hanikamu/rate_limit/mixin"
 require "hanikamu/rate_limit/metrics"
 require "hanikamu/rate_limit/rate_queue"
@@ -10,7 +11,7 @@ require "hanikamu/rate_limit/ui"
 require "hanikamu/rate_limit/version"
 
 module Hanikamu
-  module RateLimit
+  module RateLimit # rubocop:disable Metrics/ModuleLength
     extend Dry::Configurable
 
     setting :redis_url
@@ -21,6 +22,8 @@ module Hanikamu
     setting :metrics_window_seconds, default: 86_400
     setting :metrics_realtime_bucket_seconds, default: 1
     setting :metrics_realtime_window_seconds, default: 300
+    setting :wait_strategy, default: :sleep
+    setting :jitter, default: 0.0
     setting :ui_auth
     setting :ui_max_sse_connections, default: 10
 
@@ -65,6 +68,18 @@ module Hanikamu
         Metrics.dashboard_payload
       end
 
+      def with_wait_strategy(strategy)
+        previous = Thread.current[:hanikamu_rate_limit_wait_strategy]
+        Thread.current[:hanikamu_rate_limit_wait_strategy] = strategy
+        yield
+      ensure
+        Thread.current[:hanikamu_rate_limit_wait_strategy] = previous
+      end
+
+      def current_wait_strategy
+        Thread.current[:hanikamu_rate_limit_wait_strategy]
+      end
+
       def override_key_for(name)
         normalized = normalize_name(name)
         "#{RateQueue::KEY_PREFIX}:registry:#{normalized}:override"
@@ -72,6 +87,17 @@ module Hanikamu
 
       def reset_registry!
         @registry = Dry::Container.new
+      end
+
+      def reset_limit!(name)
+        cfg = fetch_limit(name)
+        key_prefix = cfg.fetch(:key_prefix)
+        rate = cfg.fetch(:rate)
+        interval = cfg.fetch(:interval)
+        limit_key = "#{key_prefix}:#{rate}:#{interval.to_f}"
+
+        redis_client.del(limit_key, override_key_for(name))
+        true
       end
 
       def registry

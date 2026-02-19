@@ -85,6 +85,7 @@ RSpec/RemoveConst:
 Naming/PredicateMethod:
   AllowedMethods:
     - register_temporary_limit
+    - reset_limit!
 
 RSpec/NestedGroups:
   Max: 5

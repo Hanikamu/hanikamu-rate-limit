@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.0 - 2026-02-19
+
+### Added
+
+- **Retry jitter** — new `jitter` config setting (default `0.0`). Adds proportional random spread to sleep and retry intervals to prevent thundering-herd retries. Calculated as `wait + rand * jitter * wait`. Applied in `RateQueue` (both `:sleep` and `:raise` paths) and `JobRetry`.
+- **`reset_limit!` class method** — `Hanikamu::RateLimit.reset_limit!(:name)` deletes the Redis sliding-window key **and** any active override for a registry limit, letting the quota start fresh.
+- **`:raise` wait strategy** — new `wait_strategy` config setting (`:sleep` or `:raise`). When set to `:raise`, `RateQueue#shift` raises `RateLimitError` immediately instead of sleeping the thread, freeing it for other work.
+- **`Hanikamu::RateLimit::JobRetry`** — module for ActiveJob classes that automatically retries rate-limited jobs. Extend it on a job class and call `rate_limit_retry` to get `rescue_from` + thread-local `:raise` strategy out of the box.
+- **`rate_limit_retry` options** — `attempts:` (`:unlimited` or integer) and `fallback_wait:` (seconds) to control retry behavior.
+- **`RateLimitError#retry_after`** — the exception now carries a `retry_after` attribute (Float, seconds) indicating how long until a rate limit slot opens.
+- **`Hanikamu::RateLimit.with_wait_strategy(:raise)`** — thread-local override that scopes the wait strategy to a block, restoring the previous value on exit (even on exceptions).
+- **`Hanikamu::RateLimit.current_wait_strategy`** — read the thread-local strategy.
+
+### Changed
+
+- All `RateLimitError` raises now include `retry_after:` with the sleep duration from Redis.
+
 ## 0.3.2 - 2026-02-17
 
 ### Fixed

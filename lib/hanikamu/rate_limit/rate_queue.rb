@@ -70,24 +70,21 @@ module Hanikamu
         @method = method
         @key_prefix = key_prefix
         @override_key = override_key&.to_s
-        @check_interval = check_interval.nil? ? Hanikamu::RateLimit.config.check_interval : check_interval
-        @max_wait_time = max_wait_time.nil? ? Hanikamu::RateLimit.config.max_wait_time : max_wait_time
+        @check_interval = resolve_config_value(check_interval, :check_interval)
+        @max_wait_time = resolve_config_value(max_wait_time, :max_wait_time)
         @block = block
         setup_metrics(metrics)
       end
 
       def shift
-        start_time = current_time
-        override_recorded = false
+        state = { start_time: current_time, override_recorded: false, last_sleep_time: @interval }
         loop do
-          allowed, sleep_time, is_override = attempt_shift(start_time)
+          allowed, sleep_time, is_override = attempt_shift(state[:start_time], state[:last_sleep_time])
           return record_and_return_allowed if allowed == 1
 
-          if is_override == 1
-            handle_override_rejection(sleep_time, record: !override_recorded)
-            override_recorded = true
-          end
-
+          state[:last_sleep_time] = sleep_time.to_f
+          track_override(sleep_time, is_override, state)
+          raise_if_strategy!(sleep_time)
           handle_sleep(sleep_time)
         end
       rescue Redis::BaseError => e
@@ -122,10 +119,10 @@ module Hanikamu
           Hanikamu::RateLimit::Metrics.record_override(@metrics_registry, 0, sleep_time.to_i)
         end
 
-        return unless @max_wait_time && sleep_time.to_f > @max_wait_time
+        return unless sleep_time.to_f > @max_wait_time
 
         Hanikamu::RateLimit::Metrics.record_blocked(redis_key) if @metrics_enabled
-        raise Hanikamu::RateLimit::RateLimitError, "Max wait time exceeded"
+        raise Hanikamu::RateLimit::RateLimitError.new("Max wait time exceeded", retry_after: sleep_time.to_f)
       end
 
       def redis_key
@@ -141,12 +138,12 @@ module Hanikamu
         [redis_key, @override_key]
       end
 
-      def attempt_shift(start_time)
+      def attempt_shift(start_time, last_sleep_time)
         now = current_time
         elapsed = now - start_time
-        if @max_wait_time && elapsed > @max_wait_time
+        if elapsed > @max_wait_time
           Hanikamu::RateLimit::Metrics.record_blocked(redis_key) if @metrics_enabled
-          raise Hanikamu::RateLimit::RateLimitError, "Max wait time exceeded"
+          raise Hanikamu::RateLimit::RateLimitError.new("Max wait time exceeded", retry_after: last_sleep_time)
         end
 
         member = "#{now}-#{SecureRandom.uuid}"
@@ -168,8 +165,30 @@ module Hanikamu
 
       def handle_sleep(sleep_time)
         @block&.call(sleep_time)
-        actual_sleep = @check_interval ? [@check_interval, sleep_time].min : sleep_time
+        jittered = apply_jitter(sleep_time.to_f)
+        actual_sleep = @check_interval ? [@check_interval, jittered].min : jittered
         sleep(actual_sleep) if actual_sleep.to_f.positive?
+      end
+
+      def raise_if_strategy!(sleep_time)
+        return unless resolve_wait_strategy == :raise
+
+        Hanikamu::RateLimit::Metrics.record_blocked(redis_key) if @metrics_enabled
+        raise RateLimitError.new("Rate limited", retry_after: apply_jitter(sleep_time.to_f))
+      end
+
+      def track_override(sleep_time, is_override, state)
+        return unless is_override == 1
+
+        handle_override_rejection(sleep_time, record: !state[:override_recorded])
+        state[:override_recorded] = true
+      end
+
+      def apply_jitter(value)
+        factor = Hanikamu::RateLimit.config.jitter.to_f
+        return value if factor <= 0 || value <= 0
+
+        value + (rand * factor * value)
       end
 
       def redis
@@ -182,6 +201,14 @@ module Hanikamu
 
       def current_time
         Time.now.to_f
+      end
+
+      def resolve_wait_strategy
+        Hanikamu::RateLimit.current_wait_strategy || Hanikamu::RateLimit.config.wait_strategy
+      end
+
+      def resolve_config_value(value, setting)
+        value.nil? ? Hanikamu::RateLimit.config.public_send(setting) : value
       end
     end
   end

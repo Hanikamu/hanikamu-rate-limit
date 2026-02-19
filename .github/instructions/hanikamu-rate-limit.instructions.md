@@ -3,6 +3,7 @@ applyTo: "**"
 ---
 
 # Hanikamu Rate Limit — Development Instructions
+Make the code follow rubocop guidelines and make sure they pass the rubocop check
 
 ## Running commands
 

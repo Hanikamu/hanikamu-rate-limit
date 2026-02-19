@@ -529,4 +529,203 @@ RSpec.describe Hanikamu::RateLimit::RateQueue do
       end
     end
   end
+
+  describe "wait strategy :raise" do
+    before do
+      Hanikamu::RateLimit.configure do |config|
+        config.redis_url = redis_url
+        config.wait_strategy = :sleep
+      end
+    end
+
+    after do
+      Hanikamu::RateLimit.configure do |config|
+        config.wait_strategy = :sleep
+      end
+    end
+
+    context "when set via thread-local with_wait_strategy" do
+      it "raises immediately instead of sleeping when rate limited" do
+        rate.times { subject.shift }
+
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        error = nil
+        Hanikamu::RateLimit.with_wait_strategy(:raise) do
+          subject.shift
+        rescue Hanikamu::RateLimit::RateLimitError => e
+          error = e
+
+        end
+
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+
+        expect(error).to be_a(Hanikamu::RateLimit::RateLimitError)
+        expect(error.message).to eq("Rate limited")
+        expect(error.retry_after).to be_a(Float)
+        expect(error.retry_after).to be >= 0
+        expect(elapsed).to be < 0.1
+      end
+
+      it "returns the wait strategy to previous value after the block" do
+        expect(Hanikamu::RateLimit.current_wait_strategy).to be_nil
+
+        Hanikamu::RateLimit.with_wait_strategy(:raise) do
+          expect(Hanikamu::RateLimit.current_wait_strategy).to eq(:raise)
+        end
+
+        expect(Hanikamu::RateLimit.current_wait_strategy).to be_nil
+      end
+
+      it "restores previous strategy even on exception" do
+        expect(Hanikamu::RateLimit.current_wait_strategy).to be_nil
+
+        expect do
+          Hanikamu::RateLimit.with_wait_strategy(:raise) do
+            raise "boom"
+          end
+        end.to raise_error(RuntimeError)
+
+        expect(Hanikamu::RateLimit.current_wait_strategy).to be_nil
+      end
+    end
+
+    context "when set via global config" do
+      before do
+        Hanikamu::RateLimit.configure do |config|
+          config.wait_strategy = :raise
+        end
+      end
+
+      it "raises immediately instead of sleeping" do
+        rate.times { subject.shift }
+
+        start_time = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        error = nil
+        begin
+          subject.shift
+        rescue Hanikamu::RateLimit::RateLimitError => e
+          error = e
+        end
+
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time
+        expect(error).to be_a(Hanikamu::RateLimit::RateLimitError)
+        expect(error.retry_after).to be_a(Float)
+        expect(error.retry_after).to be >= 0
+        expect(elapsed).to be < 0.1
+      end
+    end
+
+    context "when under rate limit" do
+      it "does not raise even with :raise strategy" do
+        Hanikamu::RateLimit.with_wait_strategy(:raise) do
+          expect { subject.shift }.not_to raise_error
+        end
+      end
+    end
+
+    it "thread-local strategy takes precedence over global config" do
+      Hanikamu::RateLimit.configure { |c| c.wait_strategy = :sleep }
+
+      rate.times { subject.shift }
+
+      error = nil
+      Hanikamu::RateLimit.with_wait_strategy(:raise) do
+        subject.shift
+      rescue Hanikamu::RateLimit::RateLimitError => e
+        error = e
+      end
+
+      expect(error).to be_a(Hanikamu::RateLimit::RateLimitError)
+    end
+  end
+
+  describe "RateLimitError retry_after" do
+    context "when max_wait_time is exceeded (sleep strategy)" do
+      let(:max_wait_time) { 0.05 }
+
+      it "includes retry_after on the exception" do
+        rate.times { subject.shift }
+
+        error = nil
+        begin
+          subject.shift
+        rescue Hanikamu::RateLimit::RateLimitError => e
+          error = e
+        end
+
+        expect(error).to be_a(Hanikamu::RateLimit::RateLimitError)
+        expect(error.retry_after).to be_a(Numeric)
+      end
+    end
+  end
+
+  describe "jitter" do
+    before do
+      Hanikamu::RateLimit.configure do |config|
+        config.jitter = 0.2
+      end
+    end
+
+    after do
+      Hanikamu::RateLimit.configure do |config|
+        config.jitter = 0.0
+      end
+    end
+
+    context "with :raise strategy" do
+      it "adds jitter to retry_after" do
+        queue = described_class.new(
+          rate,
+          klass_name: klass_name,
+          method: method_name,
+          interval: interval,
+          check_interval: check_interval,
+          max_wait_time: max_wait_time
+        )
+
+        # Verify apply_jitter produces values in the expected range
+        values = Array.new(20) { queue.send(:apply_jitter, 1.0) }
+        expect(values).to all(be_between(1.0, 1.2))
+        expect(values.uniq.size).to be > 1
+      end
+    end
+
+    context "with :sleep strategy" do
+      it "apply_jitter increases the value" do
+        queue = described_class.new(
+          rate,
+          klass_name: klass_name,
+          method: method_name,
+          interval: interval,
+          check_interval: check_interval,
+          max_wait_time: max_wait_time
+        )
+
+        jittered = queue.send(:apply_jitter, 1.0)
+        expect(jittered).to be >= 1.0
+        expect(jittered).to be <= 1.2
+      end
+    end
+
+    context "when jitter is 0" do
+      before do
+        Hanikamu::RateLimit.configure { |c| c.jitter = 0.0 }
+      end
+
+      it "returns the original value" do
+        queue = described_class.new(
+          rate,
+          klass_name: klass_name,
+          method: method_name,
+          interval: interval,
+          check_interval: check_interval,
+          max_wait_time: max_wait_time
+        )
+
+        expect(queue.send(:apply_jitter, 1.0)).to eq(1.0)
+      end
+    end
+  end
 end

@@ -134,6 +134,7 @@ RSpec.describe Hanikamu::RateLimit do
     end
 
     after do
+      described_class.instance_variable_set(:@redis_client, nil)
       redis.del(described_class.override_key_for(:external_api))
     end
 
@@ -253,6 +254,47 @@ RSpec.describe Hanikamu::RateLimit do
     it "normalizes names consistently across strings and symbols" do
       expect(described_class.override_key_for("External Api"))
         .to eq(described_class.override_key_for(:external_api))
+    end
+  end
+
+  describe ".reset_limit!" do
+    let(:redis) { Redis.new(url: redis_url) }
+
+    before do
+      described_class.instance_variable_set(:@redis_client, nil)
+      described_class.reset_registry!
+      described_class.configure do |config|
+        config.redis_url = redis_url
+        config.register_limit(:resettable_api, rate: 10, interval: 60)
+      end
+    end
+
+    it "deletes the sliding window key from Redis and returns true" do
+      cfg = described_class.fetch_limit(:resettable_api)
+      limit_key = "#{cfg[:key_prefix]}:#{cfg[:rate]}:#{cfg[:interval].to_f}"
+
+      # Seed the key so we can verify deletion
+      redis.zadd(limit_key, Time.now.to_f, SecureRandom.uuid)
+      expect(redis.exists?(limit_key)).to be(true)
+
+      result = described_class.reset_limit!(:resettable_api)
+      expect(result).to be(true)
+      expect(redis.exists?(limit_key)).to be(false)
+    end
+
+    it "also deletes the override key" do
+      override_key = described_class.override_key_for(:resettable_api)
+      redis.set(override_key, 5, ex: 60)
+      expect(redis.exists?(override_key)).to be(true)
+
+      described_class.reset_limit!(:resettable_api)
+      expect(redis.exists?(override_key)).to be(false)
+    end
+
+    it "raises ArgumentError for an unknown limit" do
+      expect do
+        described_class.reset_limit!(:unknown_limit)
+      end.to raise_error(ArgumentError, /Unknown registered limit/)
     end
   end
 end

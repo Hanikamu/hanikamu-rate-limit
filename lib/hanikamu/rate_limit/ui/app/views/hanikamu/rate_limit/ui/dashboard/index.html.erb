@@ -339,12 +339,54 @@
           grid-template-columns: 1fr;
         }
       }
+
+      /* ── Particle layer ── */
+      .particle-layer {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        overflow: hidden;
+        z-index: 0;
+      }
+
+      .page {
+        position: relative;
+        z-index: 1;
+      }
+
+      .page-footer {
+        position: relative;
+        z-index: 1;
+      }
+
+      .particle {
+        position: absolute;
+        border-radius: 50%;
+        will-change: translate, opacity;
+        animation: particle-rise ease-in forwards;
+      }
+
+      @keyframes particle-rise {
+        from {
+          translate: 0 0;
+          opacity: 1;
+        }
+        to {
+          translate: var(--end-x) var(--end-y);
+          opacity: 0;
+        }
+      }
+
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"
             integrity="sha384-T/4KgSWuZEPozpPz7rnnp/5lDSnpY1VPJCojf1S81uTHS1E38qgLfMgVsAeRCWc4"
             crossorigin="anonymous"></script>
   </head>
   <body>
+    <div class="particle-layer" id="particle-layer"></div>
     <div class="page">
       <header>
         <h1 class="title">Rate Limit Metrics</h1>
@@ -884,11 +926,89 @@
 
       renderCharts();
 
+      // ── Particle spawner ──
+      const PARTICLE_MAX = 100;
+      const SSE_INTERVAL_MS = 2000;
+      const particleLayer = document.getElementById("particle-layer");
+      let prevAllowedTotal = null;
+      let particleCount = 0;
+      let spawnTimer = null;
+
+      const spawnParticle = () => {
+        if (particleCount >= PARTICLE_MAX) return;
+
+        const size = 3 + Math.random() * 5;
+        const el = document.createElement("div");
+        el.className = "particle";
+
+        const startX = Math.random() * 100;
+        const driftX = (Math.random() - 0.5) * 20;
+        const duration = 1 + Math.random() * 2;
+
+        const hue = 152 + Math.random() * 30;
+        const lightness = 40 + Math.random() * 15;
+        const color = `hsl(${hue}, 70%, ${lightness}%)`;
+
+        el.style.width = `${size}px`;
+        el.style.height = `${size}px`;
+        el.style.left = `${startX}vw`;
+        el.style.bottom = "-10px";
+        el.style.setProperty("--end-x", `${driftX}vw`);
+        el.style.setProperty("--end-y", "-110vh");
+        el.style.animationDuration = `${duration}s`;
+        el.style.backgroundColor = color;
+        el.style.opacity = "1";
+
+        particleLayer.appendChild(el);
+        particleCount++;
+
+        el.addEventListener("animationend", () => {
+          el.remove();
+          particleCount--;
+        }, { once: true });
+      };
+
+      const scheduleParticles = (count) => {
+        if (spawnTimer) clearInterval(spawnTimer);
+        if (count <= 0) return;
+
+        const capped = Math.min(count, PARTICLE_MAX - particleCount);
+        if (capped <= 0) return;
+
+        const intervalMs = Math.max(SSE_INTERVAL_MS / capped, 20);
+        let spawned = 0;
+
+        spawnTimer = setInterval(() => {
+          spawnParticle();
+          spawned++;
+          if (spawned >= capped) clearInterval(spawnTimer);
+        }, intervalMs);
+      };
+
+      const computeAllowedDelta = (payload) => {
+        let currentTotal = 0;
+        (payload.limits || []).forEach((limit) => {
+          const lifetime = limit.lifetime || { allowed: 0 };
+          currentTotal += safeNum(lifetime.allowed);
+        });
+
+        if (prevAllowedTotal === null) {
+          prevAllowedTotal = currentTotal;
+          return Math.min(currentTotal, 10); // seed on first event
+        }
+
+        const delta = currentTotal - prevAllowedTotal;
+        prevAllowedTotal = currentTotal;
+        return Math.max(0, delta);
+      };
+
       const source = new EventSource(streamUrl);
       source.addEventListener("metrics", (event) => {
         try {
           const payload = JSON.parse(event.data);
+          const delta = computeAllowedDelta(payload);
           renderPayload(payload);
+          scheduleParticles(delta);
         } catch (e) {
           // ignore malformed events
         }
