@@ -184,4 +184,5 @@ RSpec.describe "Hanikamu::RateLimit::UI" do
 
     expect(last_response.status).not_to eq(503)
   end
+
 end

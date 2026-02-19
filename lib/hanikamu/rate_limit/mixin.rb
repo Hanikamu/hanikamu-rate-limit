@@ -25,8 +25,8 @@ module Hanikamu
         Hanikamu::RateLimit::RateQueue.new(
           rate, interval: interval, klass_name: name, method: method,
                 key_prefix: key_prefix, override_key: override_key,
-                check_interval: check_interval.nil? ? Hanikamu::RateLimit.config.check_interval : check_interval,
-                max_wait_time: max_wait_time.nil? ? Hanikamu::RateLimit.config.max_wait_time : max_wait_time,
+                check_interval: check_interval,
+                max_wait_time: max_wait_time,
                 metrics: metrics, &
         )
       end
