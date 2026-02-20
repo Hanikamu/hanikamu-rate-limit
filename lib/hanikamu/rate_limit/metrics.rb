@@ -2,17 +2,32 @@
 
 module Hanikamu
   module RateLimit
+    # Redis-backed metrics collection for the rate limiter.
+    #
+    # Data model:
+    #   - Per-limit counts are stored in Redis hashes, bucketed by time.
+    #     Two resolutions are maintained: a coarse history (default 5-min buckets,
+    #     24-hour window) and a realtime feed (default 1-sec buckets, 5-min window).
+    #   - Override events (from register_temporary_limit) are tracked separately
+    #     with remaining/reset snapshots per bucket.
+    #   - Lifetime totals (allowed/blocked) are stored in a simple hash per limit.
+    #
+    # Caching:
+    #   dashboard_payload and redis_info use short-lived thread-safe caches
+    #   (Mutex + monotonic clock) to avoid hammering Redis on rapid UI refreshes.
+    #
+    # All recording methods are fail-open: Redis errors are rescued and return nil.
     module Metrics
-      LIMITS_SET_KEY = "hanikamu:rate_limit:metrics:limits"
-      LIMITS_SET_TTL = 604_800 # 7 days
-      LIMIT_META_PREFIX = "hanikamu:rate_limit:metrics:limit:meta:"
-      LIMIT_COUNTS_PREFIX = "hanikamu:rate_limit:metrics:limit:counts:"
-      LIMIT_REALTIME_COUNTS_PREFIX = "hanikamu:rate_limit:metrics:limit:realtime:"
-      OVERRIDE_META_PREFIX = "hanikamu:rate_limit:metrics:override:meta:"
+      LIMITS_SET_KEY = "hanikamu:rate_limit:metrics:limits" # SET of all known limit keys
+      LIMITS_SET_TTL = 604_800 # 7 days — auto-evicts stale limits
+      LIMIT_META_PREFIX = "hanikamu:rate_limit:metrics:limit:meta:" # HASH per limit (rate, interval, ...)
+      LIMIT_COUNTS_PREFIX = "hanikamu:rate_limit:metrics:limit:counts:" # HASH bucketed allowed/blocked
+      LIMIT_REALTIME_COUNTS_PREFIX = "hanikamu:rate_limit:metrics:limit:realtime:" # HASH realtime buckets
+      OVERRIDE_META_PREFIX = "hanikamu:rate_limit:metrics:override:meta:" # HASH latest override snapshot
       OVERRIDE_META_TTL = 86_400 # 1 day
-      OVERRIDE_HISTORY_PREFIX = "hanikamu:rate_limit:metrics:override:history:"
-      OVERRIDE_REALTIME_HISTORY_PREFIX = "hanikamu:rate_limit:metrics:override:realtime:"
-      LIMIT_LIFETIME_PREFIX = "hanikamu:rate_limit:metrics:limit:lifetime:"
+      OVERRIDE_HISTORY_PREFIX = "hanikamu:rate_limit:metrics:override:history:" # HASH bucketed overrides
+      OVERRIDE_REALTIME_HISTORY_PREFIX = "hanikamu:rate_limit:metrics:override:realtime:" # HASH realtime
+      LIMIT_LIFETIME_PREFIX = "hanikamu:rate_limit:metrics:limit:lifetime:" # HASH lifetime totals
       DASHBOARD_CACHE_TTL = 1 # seconds
       REDIS_INFO_CACHE_TTL = 10 # seconds
 
@@ -527,6 +542,11 @@ module Hanikamu
         }
       end
 
+      # Increments per-bucket count for the given label ("allowed" or "blocked").
+      # Updates three Redis structures in a single pipeline:
+      #   1. Coarse-grained bucketed history hash
+      #   2. Realtime bucketed history hash
+      #   3. Lifetime total counter
       def increment_count(limit_key, label)
         now = Time.now.to_i
         redis.pipelined do |p|
@@ -561,6 +581,8 @@ module Hanikamu
 
       # ── Key builders / utilities ───────────────────────────────
 
+      # Floors a timestamp to its bucket boundary.
+      # e.g. bucket_for(1718450123, 300) => 1718450100
       def bucket_for(timestamp, bucket_seconds)
         timestamp - (timestamp % bucket_seconds)
       end
@@ -572,6 +594,8 @@ module Hanikamu
         merged.values
       end
 
+      # Generates all bucket boundaries within the window for charting.
+      # Each bucket is a Unix timestamp aligned to bucket_seconds.
       def buckets_for_window(window = cfg_window_seconds, bucket_seconds = cfg_bucket_seconds)
         now = Time.now.to_i
         start = now - window
