@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2 - 2026-02-20
+
+### Added
+
+- **`worker:` option for `rate_limit_retry`** — supports `:active_job` (default, unchanged) and `:sidekiq` for native Sidekiq workers (`include Sidekiq::Worker`/`Sidekiq::Job`). The Sidekiq path uses `sidekiq_retry_in` to control backoff and `sidekiq_options retry:` for max attempts. Requires Sidekiq >= 8.1.
+
 ## 0.4.1 - 2026-02-20
 
 ### Added
