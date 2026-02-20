@@ -2,12 +2,14 @@
 
 require "dry/configurable"
 require "dry/container"
+require "hanikamu/rate_limit/adaptive_state"
 require "hanikamu/rate_limit/errors"
 require "hanikamu/rate_limit/job_retry"
 require "hanikamu/rate_limit/mixin"
 require "hanikamu/rate_limit/metrics"
 require "hanikamu/rate_limit/rate_queue"
 require "hanikamu/rate_limit/reset_ttl_resolver"
+require "hanikamu/rate_limit/storage"
 require "hanikamu/rate_limit/ui"
 require "hanikamu/rate_limit/version"
 
@@ -39,6 +41,9 @@ module Hanikamu
     setting :jitter, default: 0.0            # proportional random spread: wait + rand * jitter * wait
     setting :ui_auth                         # callable for dashboard auth — deny-by-default when nil
     setting :ui_max_sse_connections, default: 10 # cap concurrent SSE connections to prevent thread exhaustion
+    setting :event_retention, default: 604_800   # seconds to keep captured events (default 7 days)
+    setting :snapshot_interval, default: 30      # seconds between rate snapshots for adaptive limits
+    setting :snapshot_retention, default: 86_400 # seconds to keep rate snapshots (default 24 hours)
 
     class << self
       # Extends Dry::Configurable's configure to inject a register_limit helper
@@ -62,6 +67,48 @@ module Hanikamu
                   check_interval: check_interval, max_wait_time: max_wait_time, metrics: metrics
           )
         )
+      end
+
+      # Registers an adaptive limit. The rate starts at `rate` (baseline)
+      # and adjusts based on classified events from the Learning UI.
+      # Stored in the same registry as fixed limits; the Mixin detects the
+      # :adaptive flag and installs the appropriate wrapper.
+      #
+      # Shorthand: pass `rate: 10..100` to auto-derive initial_rate
+      # (midpoint), min_rate, max_rate.
+      #
+      #   register_adaptive_limit(:api, rate: 10..100, interval: 1.0)
+      #
+      def register_adaptive_limit(name, interval:, rate: nil, initial_rate: nil,
+                                  min_rate: nil, max_rate: nil,
+                                  utilization_threshold: nil, ceiling_threshold: nil,
+                                  probe_cooldown: nil, max_probe_cooldown: nil,
+                                  error_classes: [], header_parser: nil,
+                                  response_parser: nil,
+                                  check_interval: nil, max_wait_time: nil, metrics: nil)
+        tuning = build_tuning_hash(initial_rate: initial_rate, min_rate: min_rate, max_rate: max_rate,
+                                   utilization_threshold: utilization_threshold,
+                                   ceiling_threshold: ceiling_threshold,
+                                   probe_cooldown: probe_cooldown,
+                                   max_probe_cooldown: max_probe_cooldown)
+        opts = resolve_adaptive_opts(rate, tuning)
+        register_adaptive_limit_from_opts(
+          name, interval: interval, error_classes: error_classes,
+                header_parser: header_parser, response_parser: response_parser,
+                check_interval: check_interval, max_wait_time: max_wait_time, metrics: metrics,
+                **opts
+        )
+      end
+
+      # Returns (or lazily creates) the AdaptiveState for a named adaptive limit.
+      def fetch_adaptive_state(name)
+        normalized = normalize_name(name)
+        adaptive_states[normalized] ||= begin
+          cfg = fetch_limit(name)
+          raise ArgumentError, "#{name} is not an adaptive limit" unless cfg[:adaptive]
+
+          AdaptiveState.new(normalized, cfg)
+        end
       end
 
       def fetch_limit(name)
@@ -122,18 +169,26 @@ module Hanikamu
 
       def reset_registry!
         @registry = Dry::Container.new
+        @adaptive_states = {}
       end
 
       # Deletes both the sliding-window sorted set and the override key from Redis,
       # allowing the quota to start completely fresh.
+      # For adaptive limits, also resets the learned adaptive state.
       def reset_limit!(name)
         cfg = fetch_limit(name)
         key_prefix = cfg.fetch(:key_prefix)
-        rate = cfg.fetch(:rate)
         interval = cfg.fetch(:interval)
-        limit_key = "#{key_prefix}:#{rate}:#{interval.to_f}"
+
+        # Adaptive limits exclude rate from the key; fixed limits include it.
+        limit_key = if cfg[:adaptive]
+                      "#{key_prefix}:#{interval.to_f}"
+                    else
+                      "#{key_prefix}:#{cfg.fetch(:rate)}:#{interval.to_f}"
+                    end
 
         redis_client.del(limit_key, override_key_for(name))
+        fetch_adaptive_state(name).reset! if cfg[:adaptive]
         true
       end
 
@@ -141,10 +196,14 @@ module Hanikamu
         @registry ||= Dry::Container.new
       end
 
+      def adaptive_states
+        @adaptive_states ||= {}
+      end
+
       private
 
-      # Defines register_limit as a singleton method on the config object so it
-      # can be called inside the configure block: config.register_limit(:name, ...)
+      # Defines register_limit and register_adaptive_limit as singleton methods
+      # on the config object so they can be called inside the configure block.
       def install_register_limit_helper(config)
         config.define_singleton_method(:register_limit) do |name, rate:, interval:,
                                                             check_interval: nil, max_wait_time: nil, metrics: nil|
@@ -152,6 +211,10 @@ module Hanikamu
             name, rate: rate, interval: interval,
                   check_interval: check_interval, max_wait_time: max_wait_time, metrics: metrics
           )
+        end
+
+        config.define_singleton_method(:register_adaptive_limit) do |name, **opts|
+          Hanikamu::RateLimit.register_adaptive_limit(name, **opts)
         end
       end
 
@@ -186,6 +249,95 @@ module Hanikamu
         registry_options[:max_wait_time] = max_wait_time unless max_wait_time.nil?
         registry_options[:metrics] = metrics unless metrics.nil?
         registry_options
+      end
+
+      # Internal: registers an adaptive limit after options have been resolved
+      # (either from explicit params or from a Range expansion).
+      def register_adaptive_limit_from_opts(name, interval:, error_classes:,
+                                            header_parser:, response_parser:,
+                                            check_interval:, max_wait_time:, metrics:, **adaptive)
+        validate_adaptive_options!(adaptive.merge(interval: interval))
+        opts = normalize_registry_options(
+          name, rate: adaptive[:initial_rate], interval: interval,
+                check_interval: check_interval, max_wait_time: max_wait_time, metrics: metrics
+        ).merge(
+          adaptive: true,
+          error_classes: Array(error_classes), header_parser: header_parser,
+          response_parser: response_parser,
+          **adaptive
+        )
+        registry.register(normalize_name(name), opts)
+      end
+
+      # Builds explicit adaptive options from individual params (non-Range path).
+      def explicit_adaptive_options(rate, **overrides)
+        defaults = { initial_rate: rate, min_rate: 1, max_rate: nil,
+                     utilization_threshold: 0.7, ceiling_threshold: 0.9,
+                     probe_cooldown: 30, max_probe_cooldown: 300 }
+        defaults.merge(overrides) { |_key, default, override| override || default }
+      end
+
+      # Collects the adaptive tuning keyword args into a single hash.
+      def build_tuning_hash(**kwargs)
+        kwargs
+      end
+
+      # Dispatches to range or explicit adaptive option builder.
+      def resolve_adaptive_opts(rate, tuning)
+        if rate.is_a?(Range)
+          expand_range_adaptive_options(rate, **tuning)
+        else
+          explicit_adaptive_options(rate, **tuning)
+        end
+      end
+
+      # Expands a Range (e.g. 10..100) into explicit adaptive parameters.
+      # initial_rate = midpoint, with sensible defaults derived from the range.
+      def expand_range_adaptive_options(range, **overrides)
+        validate_range!(range)
+        defaults = range_defaults(range)
+        defaults.merge(overrides) { |_key, default, override| override || default }
+      end
+
+      def validate_range!(range)
+        low = range.min
+        high = range.max
+        return if low.is_a?(Integer) && high.is_a?(Integer) && low < high
+
+        raise ArgumentError, "rate range must have min < max"
+      end
+
+      def range_defaults(range)
+        low  = range.min
+        high = range.max
+        mid  = ((low + high) / 2.0).ceil
+        { initial_rate: mid, min_rate: low, max_rate: high,
+          utilization_threshold: 0.7, ceiling_threshold: 0.9,
+          probe_cooldown: 30, max_probe_cooldown: 300 }
+      end
+
+      def validate_adaptive_options!(opts)
+        validate_positive_integer!(:initial_rate, opts[:initial_rate])
+        validate_positive_numeric!(:interval, opts[:interval])
+        validate_positive_integer!(:min_rate, opts[:min_rate])
+        raise ArgumentError, "min_rate must be <= initial_rate" if opts[:min_rate] > opts[:initial_rate]
+
+        return unless opts[:max_rate] && opts[:max_rate] < opts[:initial_rate]
+
+        raise ArgumentError,
+              "max_rate must be >= initial_rate"
+      end
+
+      def validate_positive_integer!(label, value)
+        return if value.is_a?(Integer) && value.positive?
+
+        raise ArgumentError, "#{label} must be a positive Integer"
+      end
+
+      def validate_positive_numeric!(label, value)
+        return if value.is_a?(Numeric) && value.positive?
+
+        raise ArgumentError, "#{label} must be a positive Numeric"
       end
     end
   end

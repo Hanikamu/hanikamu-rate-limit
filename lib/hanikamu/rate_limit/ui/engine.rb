@@ -33,6 +33,10 @@ module Hanikamu
             "app/controllers/hanikamu/rate_limit/ui/dashboard_controller",
             __dir__
           )
+          require_dependency File.expand_path(
+            "app/controllers/hanikamu/rate_limit/ui/learning_controller",
+            __dir__
+          )
         end
       end
     end

@@ -1,0 +1,32 @@
+# frozen_string_literal: true
+
+class CreateHanikamuRateLimitEvents < ActiveRecord::Migration[<%= ActiveRecord::Migration.current_version %>]
+  def change
+    create_table :hanikamu_rate_limit_events do |t|
+      t.string  :registry_name, null: false, index: true
+      t.string  :event_type,    null: false # "exception" or "response"
+      t.string  :classification, null: false, default: "unclassified"
+
+      # Exception data (encrypted at rest via ActiveRecord::Encryption)
+      t.string  :exception_class
+      t.text    :exception_message
+
+      # HTTP response data (encrypted at rest)
+      t.integer :response_status
+      t.text    :response_headers
+      t.text    :response_body_snippet
+
+      # Request context
+      t.string  :http_method
+      t.string  :request_url
+
+      # Adaptive rate at the moment the event was captured (pre-decrease)
+      t.integer :adaptive_rate
+
+      t.timestamps
+    end
+
+    add_index :hanikamu_rate_limit_events, :classification
+    add_index :hanikamu_rate_limit_events, :created_at
+  end
+end

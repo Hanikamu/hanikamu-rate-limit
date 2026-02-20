@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 - 2026-02-20
+
+### Added
+
+- **Adaptive rate limiting** — `register_adaptive_limit` discovers an API's real rate limit at runtime using ceiling-based linear probing:
+  - Starts at `initial_rate` and probes upward by +1 after N consecutive successes at full utilisation.
+  - Drops immediately when a captured event is classified as `"rate_limit"` (via the Learning UI or auto-inherited from a previous classification).
+  - Builds a confidence-weighted error ceiling that makes it progressively harder to probe past a known limit. Probe cooldown scales with evidence and is capped at `max_probe_cooldown` (default 300 s) to prevent stalls.
+  - Optional `header_parser` extracts `remaining`/`reset` from error responses for precise recovery via `register_temporary_limit`.
+  - All state persisted in Redis via Lua scripts for atomicity and cross-process consistency.
+- **`hanikamu_adaptive_feedback`** — instance helper that decouples your method's return value from the adaptive feedback loop. Call it inside a rate-limited method to pass response data (e.g. HTTP status, headers) to the `response_parser` without changing what the method returns.
+- **`response_parser:`** — optional lambda on `register_adaptive_limit` that inspects every response. When it returns a Hash (e.g. `{ status: 429 }`), the event is captured for the Learning UI. Works with both the method's return value and explicit `hanikamu_adaptive_feedback` data.
+- **`report_rate_limit_headers`** — instance helper for manually feeding rate-limit data (remaining, reset, reset_kind) back to the gem.
+- **`AdaptiveState`** — manages adaptive state in Redis (current rate, success counter, error ceiling, confidence scoring, probe cooldown) with local caching to minimise reads.
+- **Storage module** — ActiveRecord models for persisting rate-limit telemetry:
+  - `CapturedEvent` / `EventCapture` — record exceptions and HTTP responses with encrypted sensitive columns.
+  - `RateSnapshot` / `SnapshotRecorder` — periodically snapshot the adaptive `current_rate` for historical charts.
+  - `RetentionCleanup` — prune old events and snapshots based on configurable retention periods.
+- **Learning UI (`/learning`)** — web interface for reviewing captured events and classifying them as rate-limit signals or noise. Classifications auto-inherit to future events with the same signature.
+- **Dashboard enhancements** — event-marker dots on charts, live `current_rate` in the 5-minute chart.
+- **Configuration** — `event_retention`, `snapshot_interval`, `snapshot_retention`.
+- **Rails generator** — `rails generate hanikamu_rate_limit:install` creates the required migrations.
+- **Validation** — adaptive tuning parameters are validated on registration.
+
+### Infrastructure
+
+- **PostgreSQL** — required for the Storage module and Learning UI. Fixed-rate limiting still only needs Redis.
+- **ActiveRecord::Encryption** — sensitive columns are encrypted at rest. Configure Rails' encryption keys before deploying.
+
 ## 0.4.2 - 2026-02-20
 
 ### Added

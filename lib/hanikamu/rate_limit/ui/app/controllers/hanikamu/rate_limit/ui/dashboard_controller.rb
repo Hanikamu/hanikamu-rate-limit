@@ -13,6 +13,7 @@ module Hanikamu
         append_view_path File.expand_path("../../../../views", __dir__)
         layout false
         before_action :authorize_ui!
+        helper_method :engine_root
 
         def index
           payload = Hanikamu::RateLimit::Metrics.dashboard_payload
@@ -74,6 +75,7 @@ module Hanikamu
         end
 
         def emit_payload(sse)
+          tick_snapshot_recorder
           sse.write(Hanikamu::RateLimit::Metrics.dashboard_payload, event: "metrics")
         rescue StandardError => e
           Rails.logger.error("[HanikamuRateLimit::UI] SSE payload error: #{e.class}: #{e.message}")
@@ -84,6 +86,17 @@ module Hanikamu
           response.headers["Content-Type"] = "text/event-stream"
           response.headers["Cache-Control"] = "no-cache"
           response.headers["X-Accel-Buffering"] = "no"
+        end
+
+        def tick_snapshot_recorder
+          Hanikamu::RateLimit::Storage::SnapshotRecorder.tick!
+        rescue StandardError => e
+          Rails.logger.error("[HanikamuRateLimit::UI] Snapshot tick error: #{e.class}: #{e.message}")
+        end
+
+        # Base URL of the engine mount point, derived from the request path.
+        def engine_root
+          request.path.sub(%r{/(metrics|stream|learning)\b.*}, "")
         end
 
         def authorize_ui!
