@@ -243,6 +243,190 @@ RSpec.describe Hanikamu::RateLimit do
       expect(Redis).to have_received(:new).once
       expect(redis_double).to have_received(:set).twice
     end
+
+    context "with reset_kind: :seconds (default)" do
+      it "uses the reset value directly as TTL" do
+        result = described_class.register_temporary_limit(:external_api, remaining: 50, reset: 30, reset_kind: :seconds)
+        expect(result).to be(true)
+
+        key = described_class.override_key_for(:external_api)
+        expect(redis.get(key).to_i).to eq(50)
+        ttl = redis.ttl(key)
+        expect(ttl).to be > 0
+        expect(ttl).to be <= 30
+      end
+
+      it "behaves the same when reset_kind is omitted" do
+        result = described_class.register_temporary_limit(:external_api, remaining: 50, reset: 30)
+        expect(result).to be(true)
+
+        key = described_class.override_key_for(:external_api)
+        expect(redis.get(key).to_i).to eq(50)
+        ttl = redis.ttl(key)
+        expect(ttl).to be > 0
+        expect(ttl).to be <= 30
+      end
+    end
+
+    context "with reset_kind: :unix" do
+      it "converts a Unix timestamp to a TTL in seconds" do
+        future_timestamp = Time.now.to_i + 45
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 80, reset: future_timestamp, reset_kind: :unix
+        )
+        expect(result).to be(true)
+
+        key = described_class.override_key_for(:external_api)
+        expect(redis.get(key).to_i).to eq(80)
+        ttl = redis.ttl(key)
+        expect(ttl).to be > 0
+        expect(ttl).to be <= 45
+      end
+
+      it "returns false when the Unix timestamp is in the past" do
+        past_timestamp = Time.now.to_i - 10
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 80, reset: past_timestamp, reset_kind: :unix
+        )
+        expect(result).to be(false)
+      end
+
+      it "accepts string Unix timestamps (e.g. from HTTP headers)" do
+        future_timestamp = (Time.now.to_i + 30).to_s
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: "50", reset: future_timestamp, reset_kind: :unix
+        )
+        expect(result).to be(true)
+
+        key = described_class.override_key_for(:external_api)
+        expect(redis.get(key).to_i).to eq(50)
+      end
+
+      it "accepts array-wrapped Unix timestamps" do
+        future_timestamp = [(Time.now.to_i + 20).to_s]
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: ["60"], reset: future_timestamp, reset_kind: :unix
+        )
+        expect(result).to be(true)
+
+        key = described_class.override_key_for(:external_api)
+        expect(redis.get(key).to_i).to eq(60)
+      end
+
+      it "returns false for non-numeric reset value" do
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 10, reset: "abc", reset_kind: :unix
+        )
+        expect(result).to be(false)
+      end
+    end
+
+    context "with reset_kind: :datetime" do
+      it "converts a Time object to a TTL in seconds" do
+        future_time = Time.now + 40
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 70, reset: future_time, reset_kind: :datetime
+        )
+        expect(result).to be(true)
+
+        key = described_class.override_key_for(:external_api)
+        expect(redis.get(key).to_i).to eq(70)
+        ttl = redis.ttl(key)
+        expect(ttl).to be > 0
+        expect(ttl).to be <= 40
+      end
+
+      it "converts a DateTime object to a TTL in seconds" do
+        future_time = Time.now + 35
+        future_datetime = DateTime.parse(future_time.to_s)
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 60, reset: future_datetime, reset_kind: :datetime
+        )
+        expect(result).to be(true)
+
+        key = described_class.override_key_for(:external_api)
+        expect(redis.get(key).to_i).to eq(60)
+        ttl = redis.ttl(key)
+        expect(ttl).to be > 0
+        expect(ttl).to be <= 35
+      end
+
+      it "returns false when the datetime is in the past" do
+        past_time = Time.now - 10
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 50, reset: past_time, reset_kind: :datetime
+        )
+        expect(result).to be(false)
+      end
+
+      it "returns false for nil reset" do
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 50, reset: nil, reset_kind: :datetime
+        )
+        expect(result).to be(false)
+      end
+
+      it "returns false for non-Time/DateTime types" do
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 50, reset: 12_345, reset_kind: :datetime
+        )
+        expect(result).to be(false)
+      end
+
+      it "returns false for string values" do
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 50, reset: "2026-01-01T00:00:00Z", reset_kind: :datetime
+        )
+        expect(result).to be(false)
+      end
+    end
+
+    context "with reset_kind: :seconds overflow protection" do
+      it "raises ArgumentError when seconds value looks like a Unix timestamp" do
+        expect do
+          described_class.register_temporary_limit(
+            :external_api, remaining: 10, reset: 1_740_000_000, reset_kind: :seconds
+          )
+        end.to raise_error(ArgumentError, /exceeds MAX_SECONDS_TTL/)
+      end
+
+      it "raises ArgumentError when string seconds value exceeds max" do
+        expect do
+          described_class.register_temporary_limit(
+            :external_api, remaining: 10, reset: "100000", reset_kind: :seconds
+          )
+        end.to raise_error(ArgumentError, /exceeds MAX_SECONDS_TTL/)
+      end
+
+      it "allows seconds at the boundary (86400)" do
+        result = described_class.register_temporary_limit(
+          :external_api, remaining: 10, reset: 86_400, reset_kind: :seconds
+        )
+        expect(result).to be(true)
+      end
+
+      it "raises for one second over the boundary" do
+        expect do
+          described_class.register_temporary_limit(
+            :external_api, remaining: 10, reset: 86_401, reset_kind: :seconds
+          )
+        end.to raise_error(ArgumentError, /exceeds MAX_SECONDS_TTL/)
+      end
+    end
+
+    context "with invalid reset_kind" do
+      it "raises ArgumentError" do
+        expect do
+          described_class.register_temporary_limit(:external_api, remaining: 10, reset: 5, reset_kind: :invalid)
+        end.to raise_error(ArgumentError, /Invalid reset_kind/)
+      end
+
+      it "includes valid options in the error message" do
+        expect do
+          described_class.register_temporary_limit(:external_api, remaining: 10, reset: 5, reset_kind: :timestamp)
+        end.to raise_error(ArgumentError, /seconds, unix, datetime/)
+      end
+    end
   end
 
   describe ".override_key_for" do

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1 - 2026-02-20
+
+### Added
+
+- **`reset_kind` option for `register_temporary_limit`** — controls how the `reset:` value is interpreted. Accepts `:seconds` (default, TTL in seconds), `:unix` (Unix timestamp), or `:datetime` (`Time`/`DateTime` object). This lets you pass rate-limit headers from certain APIs (`X-RateLimit-Reset` as a Unix timestamp) directly without manual conversion.
+- **Seconds overflow guard** — when `reset_kind: :seconds` (default), values exceeding 86,400 (1 day) raise `ArgumentError` to catch accidental Unix timestamps.
+- **Type validation for `:datetime`** — only `Time` and `DateTime` instances are accepted; strings, integers, and `nil` return `false`.
+- **`ResetTtlResolver` module** — extracted reset TTL resolution logic into `Hanikamu::RateLimit::ResetTtlResolver` for cleaner separation of concerns.
+
 ## 0.4.0 - 2026-02-19
 
 ### Added

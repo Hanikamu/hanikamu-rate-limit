@@ -5,8 +5,39 @@ require "redis"
 
 module Hanikamu
   module RateLimit
+    # Core rate limiter backed by a Redis sorted set (sliding window) and an
+    # optional override key (fixed-window counter with TTL).
+    #
+    # Algorithm:
+    #   The Lua script (LUA_SCRIPT) runs atomically inside Redis on every call to #shift.
+    #   It first checks for an active override key (from register_temporary_limit);
+    #   if present and remaining > 0, it DECRs and allows immediately. If remaining == 0,
+    #   it returns the key's TTL as sleep_time.
+    #
+    #   When no override is active (or the key has expired/is invalid), the script falls
+    #   back to the sliding window: it removes entries older than `now - interval` from
+    #   the sorted set, counts remaining members, and either adds the new request (allowed)
+    #   or calculates how long to sleep based on the oldest entry's score.
+    #
+    # Waiting behaviour:
+    #   - :sleep strategy — sleeps in check_interval steps until a slot opens or max_wait_time
+    #     is exceeded, then raises RateLimitError.
+    #   - :raise strategy — raises RateLimitError immediately with retry_after, freeing the
+    #     thread for other work (used by JobRetry for background jobs).
+    #
+    # Fail-open:
+    #   If Redis is unreachable, #shift logs a warning and returns nil (allows the request).
     class RateQueue
       KEY_PREFIX = "hanikamu:rate_limit:rate_queue"
+      # Lua script executed atomically inside Redis via EVALSHA.
+      # Two Redis keys are passed:
+      #   KEYS[1] — the sliding window sorted set (score = timestamp, member = uuid)
+      #   KEYS[2] — the override key (optional; simple string counter with EX/TTL)
+      #
+      # Returns an array [allowed, sleep_time, is_override?]:
+      #   allowed    = 1 (proceed) or 0 (rate limited)
+      #   sleep_time = seconds to wait before retrying
+      #   is_override = 1 when the rejection came from the override key (used for metrics)
       LUA_SCRIPT = <<~LUA
         local key = KEYS[1]
         local override_key = KEYS[2]
@@ -15,6 +46,9 @@ module Hanikamu
         local rate = tonumber(ARGV[3])
         local member = ARGV[4]
 
+        -- Phase 1: Check override (fixed-window counter with TTL)
+        -- If the override key exists and has a valid TTL, use it instead of the sliding window.
+        -- DECR on allow; return TTL as sleep_time on reject.
         if override_key and override_key ~= "" then
           local override_val = redis.call("GET", override_key)
           if override_val then
@@ -33,15 +67,21 @@ module Hanikamu
           end
         end
 
+        -- Phase 2: Sliding window algorithm
+        -- Remove all entries older than (now - interval), then count remaining.
         redis.call("ZREMRANGEBYSCORE", key, 0, now - interval)
         local count = redis.call("ZCARD", key)
 
+        -- Under the limit: add this request to the sorted set with score = now.
+        -- The member is a unique "timestamp-uuid" string to avoid collisions.
         if count < rate then
           redis.call("ZADD", key, now, member)
           redis.call("EXPIRE", key, math.ceil(interval) + 1)
           return {1, 0}
         end
 
+        -- Over the limit: calculate how long until the oldest entry expires.
+        -- sleep_for = oldest_score + interval - now
         local oldest = redis.call("ZRANGE", key, 0, 0, "WITHSCORES")
         if oldest and oldest[2] then
           local sleep_for = tonumber(oldest[2]) + interval - now
@@ -76,6 +116,9 @@ module Hanikamu
         setup_metrics(metrics)
       end
 
+      # Attempts to acquire a rate limit slot. Blocks (or raises) until allowed.
+      # Returns nil on success (the method should proceed).
+      # Raises RateLimitError if max_wait_time is exceeded or strategy is :raise.
       def shift
         state = { start_time: current_time, override_recorded: false, last_sleep_time: @interval }
         loop do
@@ -114,6 +157,10 @@ module Hanikamu
         nil
       end
 
+      # When an override rejection occurs (remaining == 0, TTL > 0):
+      # - If TTL > max_wait_time, raise immediately (no point polling — the
+      #   fixed-window won't reset until the TTL expires).
+      # - Otherwise, let the loop continue polling until the override expires.
       def handle_override_rejection(sleep_time, record: true)
         if record && @metrics_enabled && @metrics_registry
           Hanikamu::RateLimit::Metrics.record_override(@metrics_registry, 0, sleep_time.to_i)
@@ -125,6 +172,9 @@ module Hanikamu
         raise Hanikamu::RateLimit::RateLimitError.new("Max wait time exceeded", retry_after: sleep_time.to_f)
       end
 
+      # Redis key for the sliding window sorted set.
+      # Format: "<key_prefix>:<rate>:<interval>" — ensures different rate/interval
+      # configs don't collide even if they share a prefix.
       def redis_key
         @redis_key ||= begin
           prefix = @key_prefix || "#{KEY_PREFIX}:#{@klass_name}:#{@method}"
@@ -132,12 +182,16 @@ module Hanikamu
         end
       end
 
+      # Keys passed to the Lua script. When no override_key is set,
+      # only the sliding window key is passed (KEYS[2] will be nil in Lua).
       def redis_keys
         return [redis_key] if @override_key.nil? || @override_key.empty?
 
         [redis_key, @override_key]
       end
 
+      # Checks elapsed time against max_wait_time, then runs the Lua script.
+      # Each attempt generates a unique member (timestamp-uuid) for the sorted set.
       def attempt_shift(start_time, last_sleep_time)
         now = current_time
         elapsed = now - start_time
@@ -150,6 +204,8 @@ module Hanikamu
         eval_script(now, member)
       end
 
+      # Uses EVALSHA for efficiency; falls back to SCRIPT LOAD + retry on NOSCRIPT
+      # (happens after Redis restarts or script cache eviction).
       def eval_script(now, member)
         redis.evalsha(lua_sha, keys: redis_keys, argv: [now, @interval, @rate, member])
       rescue Redis::CommandError => e
@@ -163,6 +219,9 @@ module Hanikamu
         redis.evalsha(lua_sha, keys: redis_keys, argv: [now, @interval, @rate, member])
       end
 
+      # Sleeps for the shorter of check_interval and the jittered sleep_time.
+      # Using check_interval as a cap means we poll at a fixed rate rather than
+      # sleeping the full duration, allowing faster recovery when slots open.
       def handle_sleep(sleep_time)
         @block&.call(sleep_time)
         jittered = apply_jitter(sleep_time.to_f)
@@ -170,6 +229,9 @@ module Hanikamu
         sleep(actual_sleep) if actual_sleep.to_f.positive?
       end
 
+      # When strategy is :raise, skip sleeping entirely and raise with retry_after.
+      # This is the mechanism that makes JobRetry work: the job catches the error
+      # and calls retry_job(wait: retry_after), freeing the worker thread.
       def raise_if_strategy!(sleep_time)
         return unless resolve_wait_strategy == :raise
 
@@ -184,6 +246,9 @@ module Hanikamu
         state[:override_recorded] = true
       end
 
+      # Adds proportional jitter: value + rand * jitter * value.
+      # Prevents thundering herds when many workers are rate-limited simultaneously.
+      # A jitter of 0.0 (default) disables this entirely.
       def apply_jitter(value)
         factor = Hanikamu::RateLimit.config.jitter.to_f
         return value if factor <= 0 || value <= 0
@@ -203,6 +268,8 @@ module Hanikamu
         Time.now.to_f
       end
 
+      # Thread-local strategy takes precedence over global config.
+      # This is how JobRetry scopes :raise to a single job without affecting others.
       def resolve_wait_strategy
         Hanikamu::RateLimit.current_wait_strategy || Hanikamu::RateLimit.config.wait_strategy
       end
