@@ -15,4 +15,5 @@ group :development do
   gem "rubocop-performance"
   gem "rubocop-rake"
   gem "rubocop-rspec"
+  gem "sidekiq", ">= 8.1"
 end

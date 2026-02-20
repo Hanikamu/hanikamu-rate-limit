@@ -40,6 +40,33 @@ RSpec.describe Hanikamu::RateLimit::JobRetry do
       end
     end
   end
+
+  # Minimal Sidekiq-like base class for testing
+  let(:fake_sidekiq_base) do
+    Class.new do
+      class << self
+        def sidekiq_options(opts = {})
+          @sidekiq_options = (@sidekiq_options || {}).merge(opts)
+        end
+
+        def stored_sidekiq_options
+          @sidekiq_options || {}
+        end
+
+        def sidekiq_retry_in(&block)
+          @sidekiq_retry_in_block = block
+        end
+
+        def stored_retry_in_block
+          @sidekiq_retry_in_block
+        end
+      end
+
+      def perform(*, **)
+        # no-op, overridden by subclasses
+      end
+    end
+  end
   let(:redis) { Redis.new(url: redis_url) }
 
   before do
@@ -263,6 +290,228 @@ RSpec.describe Hanikamu::RateLimit::JobRetry do
           end
         end.to raise_error(ArgumentError, /fallback_wait must be a non-negative Numeric/)
       end
+
+      it "raises ArgumentError for an invalid worker option" do
+        expect do
+          Class.new(fake_job_base) do
+            extend Hanikamu::RateLimit::JobRetry
+
+            rate_limit_retry worker: :resque
+          end
+        end.to raise_error(ArgumentError, /worker must be one of/)
+      end
     end
+  end
+
+  describe ".rate_limit_retry with worker: :sidekiq" do
+    around do |example|
+      # Stub Sidekiq module for the duration of each test
+      stub_sidekiq("8.1.0") { example.run }
+    end
+
+    it "sets sidekiq_options retry to the given attempts" do
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq, attempts: 10
+      end
+
+      expect(job_class.stored_sidekiq_options[:retry]).to eq(9)
+    end
+
+    it "sets a large retry count for attempts: :unlimited" do
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq, attempts: :unlimited
+      end
+
+      expect(job_class.stored_sidekiq_options[:retry]).to eq(described_class::SIDEKIQ_UNLIMITED_RETRIES)
+    end
+
+    it "registers a sidekiq_retry_in block" do
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq
+      end
+
+      expect(job_class.stored_retry_in_block).not_to be_nil
+    end
+
+    it "returns retry_after for RateLimitError in the retry_in block" do
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq
+      end
+
+      error = Hanikamu::RateLimit::RateLimitError.new("limited", retry_after: 7.5)
+      result = job_class.stored_retry_in_block.call(1, error)
+
+      expect(result).to eq(7.5)
+    end
+
+    it "returns fallback_wait when retry_after is nil" do
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq, fallback_wait: 12
+      end
+
+      error = Hanikamu::RateLimit::RateLimitError.new("limited", retry_after: nil)
+      result = job_class.stored_retry_in_block.call(1, error)
+
+      expect(result).to eq(12)
+    end
+
+    it "returns nil for non-RateLimitError exceptions (uses default backoff)" do
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq
+      end
+
+      error = RuntimeError.new("something else")
+      result = job_class.stored_retry_in_block.call(1, error)
+
+      expect(result).to be_nil
+    end
+
+    it "sets wait strategy to :raise during perform" do
+      captured_strategy = nil
+
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq
+
+        define_method(:perform) do |*, **|
+          captured_strategy = Hanikamu::RateLimit.current_wait_strategy
+        end
+      end
+
+      job_class.new.perform
+
+      expect(captured_strategy).to eq(:raise)
+    end
+
+    it "restores wait strategy after perform" do
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq
+
+        define_method(:perform) do |*, **|
+          # no-op
+        end
+      end
+
+      expect(Hanikamu::RateLimit.current_wait_strategy).to be_nil
+
+      job_class.new.perform
+
+      expect(Hanikamu::RateLimit.current_wait_strategy).to be_nil
+    end
+
+    it "restores wait strategy even if perform raises" do
+      base = fake_sidekiq_base
+      job_class = Class.new(base) do
+        extend Hanikamu::RateLimit::JobRetry
+
+        rate_limit_retry worker: :sidekiq
+
+        define_method(:perform) do |*, **|
+          raise "boom"
+        end
+      end
+
+      expect { job_class.new.perform }.to raise_error(RuntimeError, "boom")
+      expect(Hanikamu::RateLimit.current_wait_strategy).to be_nil
+    end
+
+    context "with Sidekiq version too low" do
+      it "raises LoadError for sidekiq < 8.1" do
+        stub_sidekiq("7.3.0") do
+          expect do
+            base = fake_sidekiq_base
+            Class.new(base) do
+              extend Hanikamu::RateLimit::JobRetry
+
+              rate_limit_retry worker: :sidekiq
+            end
+          end.to raise_error(LoadError, /requires sidekiq >= 8.1/)
+        end
+      end
+    end
+
+    context "without Sidekiq loaded" do
+      it "raises LoadError when Sidekiq is not defined" do
+        # Ensure no Sidekiq constant exists
+        hide_sidekiq do
+          expect do
+            base = fake_sidekiq_base
+            Class.new(base) do
+              extend Hanikamu::RateLimit::JobRetry
+
+              rate_limit_retry worker: :sidekiq
+            end
+          end.to raise_error(LoadError, /requires the sidekiq gem/)
+        end
+      end
+    end
+
+    context "when host class lacks Sidekiq DSL methods" do
+      it "raises ArgumentError with a helpful message" do
+        stub_sidekiq("8.1.0") do
+          expect do
+            # Plain class without include Sidekiq::Job — no sidekiq_options or sidekiq_retry_in
+            Class.new do
+              extend Hanikamu::RateLimit::JobRetry
+
+              rate_limit_retry worker: :sidekiq
+            end
+          end.to raise_error(ArgumentError, /include Sidekiq::Job/)
+        end
+      end
+    end
+  end
+
+  private
+
+  # Temporarily defines a fake ::Sidekiq module with the given version.
+  def stub_sidekiq(version)
+    already_defined = defined?(Sidekiq)
+    old_sidekiq = Sidekiq if already_defined
+
+    Object.send(:remove_const, :Sidekiq) if already_defined
+    fake = Module.new
+    fake.const_set(:VERSION, version)
+    Object.const_set(:Sidekiq, fake)
+
+    yield
+  ensure
+    Object.send(:remove_const, :Sidekiq) if Object.const_defined?(:Sidekiq)
+    Object.const_set(:Sidekiq, old_sidekiq) if already_defined
+  end
+
+  # Temporarily hides ::Sidekiq so it appears unloaded.
+  def hide_sidekiq
+    already_defined = defined?(Sidekiq)
+    old_sidekiq = Sidekiq if already_defined
+    Object.send(:remove_const, :Sidekiq) if already_defined
+
+    yield
+  ensure
+    Object.send(:remove_const, :Sidekiq) if Object.const_defined?(:Sidekiq)
+    Object.const_set(:Sidekiq, old_sidekiq) if already_defined
   end
 end

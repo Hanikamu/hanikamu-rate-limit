@@ -15,7 +15,7 @@ Distributed, Redis-backed rate limiting for Ruby. Coordinates request throughput
    - [Class methods](#class-methods)
    - [Callbacks](#callbacks)
 4. [Resetting limits](#resetting-limits)
-5. [Background Jobs (ActiveJob)](#background-jobs-activejob)
+5. [Background Jobs](#background-jobs)
 6. [UI Dashboard](#ui-dashboard)
 7. [Error Handling](#error-handling)
 8. [Testing](#testing)
@@ -241,20 +241,20 @@ end
 
 ## Resetting limits
 
-Clear a registry limit's counter and any active override so the quota starts fresh:
+If something goes wrong — a deploy changes upstream quotas, a temporary override becomes stale, or you need to recover from a stuck state — you can clear a limit so the quota starts fresh:
 
 ```ruby
 Hanikamu::RateLimit.reset_limit!(:external_api)
-# => true
+# => true   (clears the counter and any active temporary override)
 ```
 
-Inline limits have an auto-generated reset method:
+Inline limits get an auto-generated reset method on the class:
 
 ```ruby
 MyService.reset_execute_limit!
 ```
 
-## Background Jobs (ActiveJob)
+## Background Jobs
 
 ### The problem
 
@@ -263,6 +263,8 @@ With the default `:sleep` strategy, a rate-limited call blocks the worker thread
 ### The solution
 
 `JobRetry` makes rate-limited jobs **re-enqueue themselves** instead of blocking. The thread is freed instantly and the job retries after the wait period.
+
+#### ActiveJob (default)
 
 ```ruby
 class RateLimitedJob < ApplicationJob
@@ -275,25 +277,42 @@ class RateLimitedJob < ApplicationJob
 end
 ```
 
-When `MyService#execute` hits a rate limit inside this job, it raises `RateLimitError` (instead of sleeping), and the job automatically calls `retry_job(wait: ...)` with the correct delay.
+#### Sidekiq native workers
+
+For workers that use `include Sidekiq::Worker` (or `Sidekiq::Job`) directly, pass `worker: :sidekiq`. Requires Sidekiq >= 8.1.
+
+```ruby
+class RateLimitedWorker
+  include Sidekiq::Worker
+  extend Hanikamu::RateLimit::JobRetry
+  rate_limit_retry worker: :sidekiq
+
+  def perform
+    MyService.new.execute
+  end
+end
+```
+
+The Sidekiq path uses `sidekiq_retry_in` for backoff timing and `sidekiq_options retry:` for the retry cap. `attempts` always means **total executions** (initial run + retries), so `attempts: 5` maps to `sidekiq_options retry: 4`. Non-`RateLimitError` exceptions use Sidekiq's default backoff.
 
 The same service still works normally outside of jobs — it sleeps as expected when called synchronously.
 
 ### `rate_limit_retry` options
 
-| Option          | Default      | Description                                                              |
-| --------------- | ------------ | ------------------------------------------------------------------------ |
-| `attempts`      | `:unlimited` | Max retries. `:unlimited` retries forever; an integer caps the attempts. |
-| `fallback_wait` | `5`          | Seconds to wait if the error has no `retry_after` value.                 |
+| Option          | Default       | Description                                                              |
+| --------------- | ------------- | ------------------------------------------------------------------------ |
+| `attempts`      | `:unlimited`  | Total executions (initial + retries). `:unlimited` retries forever.       |
+| `fallback_wait` | `5`           | Seconds to wait if the error has no `retry_after` value.                 |
+| `worker`        | `:active_job` | `:active_job` for ActiveJob, `:sidekiq` for native Sidekiq workers.      |
 
 ```ruby
 extend Hanikamu::RateLimit::JobRetry
-rate_limit_retry attempts: 20, fallback_wait: 10
+rate_limit_retry attempts: 20, fallback_wait: 10, worker: :sidekiq
 ```
 
 ### Jitter
 
-When many jobs are rate-limited at the same time they will all retry at the same instant, creating a spike. `jitter` adds random spread to prevent this:
+When many jobs retry at the same instant they can create a spike. `jitter` adds random spread to prevent this:
 
 ```ruby
 Hanikamu::RateLimit.configure do |config|
@@ -301,9 +320,11 @@ Hanikamu::RateLimit.configure do |config|
 end
 ```
 
+Jitter applies globally — it smooths out both synchronous waits and job retries.
+
 ### Manual strategy override
 
-You can switch to the raise strategy for any block of code, not just ActiveJob:
+`JobRetry` switches to the `:raise` strategy automatically. You can do the same thing anywhere — useful in controllers, scripts, or tests where you want to catch the error yourself:
 
 ```ruby
 Hanikamu::RateLimit.with_wait_strategy(:raise) do
@@ -409,6 +430,20 @@ end
 ```
 
 ## Testing
+
+### Testing your app
+
+In tests you generally want rate limits to raise immediately instead of blocking. Use the `:raise` strategy and rescue the error:
+
+```ruby
+around do |example|
+  Hanikamu::RateLimit.with_wait_strategy(:raise) { example.run }
+end
+```
+
+Or stub the rate-limited method to bypass the limiter entirely when it's not relevant to the test.
+
+### Running the gem's own tests
 
 ```bash
 make rspec
