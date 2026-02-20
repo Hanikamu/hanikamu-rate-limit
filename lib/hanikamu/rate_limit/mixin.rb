@@ -22,27 +22,27 @@ module Hanikamu
                        check_interval: nil, max_wait_time: nil, metrics: nil, &)
         if registry
           validate_registry_only!(rate, interval, check_interval, max_wait_time, metrics)
-          queue = build_queue_from_registry(method, registry, &)
+          build_and_install_registry_limit(method, registry, &)
         else
           validate_inline_options!(rate, interval)
           queue = build_queue(rate, interval || 60, method,
                               check_interval: check_interval, max_wait_time: max_wait_time,
                               metrics: metrics, &)
+          install_rate_limited_method(method, queue)
         end
-
-        install_rate_limited_method(method, queue)
       end
 
       private
 
       def build_queue(rate, interval, method, key_prefix: nil, check_interval: nil,
-                      max_wait_time: nil, override_key: nil, metrics: nil, &)
+                      max_wait_time: nil, override_key: nil, metrics: nil,
+                      adaptive_state: nil, &)
         Hanikamu::RateLimit::RateQueue.new(
           rate, interval: interval, klass_name: name, method: method,
                 key_prefix: key_prefix, override_key: override_key,
                 check_interval: check_interval,
                 max_wait_time: max_wait_time,
-                metrics: metrics, &
+                metrics: metrics, adaptive_state: adaptive_state, &
         )
       end
 
@@ -58,6 +58,31 @@ module Hanikamu
           override_key: Hanikamu::RateLimit.override_key_for(registry),
           metrics: cfg[:metrics], &
         )
+      end
+
+      # Fetches the registry config and branches: fixed limits use the existing
+      # install path; adaptive limits wire up the AIMD wrapper.
+      def build_and_install_registry_limit(method, registry, &)
+        cfg = Hanikamu::RateLimit.fetch_limit(registry)
+        if cfg[:adaptive]
+          build_and_install_adaptive_limit(method, registry, cfg, &)
+        else
+          queue = build_queue_from_registry(method, registry, &)
+          install_rate_limited_method(method, queue)
+        end
+      end
+
+      def build_and_install_adaptive_limit(method, registry, cfg, &)
+        state = Hanikamu::RateLimit.fetch_adaptive_state(registry)
+        queue = build_queue(
+          cfg.fetch(:rate), cfg.fetch(:interval), method,
+          key_prefix: cfg[:key_prefix], check_interval: cfg[:check_interval],
+          max_wait_time: cfg[:max_wait_time],
+          override_key: Hanikamu::RateLimit.override_key_for(registry),
+          metrics: cfg[:metrics], adaptive_state: state, &
+        )
+        state.attach_sliding_window(queue.sliding_window_key, queue.interval)
+        install_adaptive_rate_limited_method(method, queue, state, cfg, registry)
       end
 
       def validate_registry_only!(rate, interval, check_interval, max_wait_time, metrics)
@@ -87,6 +112,91 @@ module Hanikamu
 
         define_singleton_method("reset_#{method}_limit!") { queue.reset }
         prepend(mixin)
+      end
+
+      # Builds the rate-gate + record_success module, optionally layering
+      # an error-handling module on top for AIMD error_classes.
+      # Also injects a report_rate_limit_headers instance helper.
+      def install_adaptive_rate_limited_method(method, queue, state, cfg, reg_name)
+        prepend(build_adaptive_mixin(method, queue, state, cfg, reg_name))
+        prepend(build_error_handling_mixin(method, state, cfg, reg_name)) if Array(cfg[:error_classes]).any?
+        prepend(build_report_headers_helper)
+
+        define_singleton_method("reset_#{method}_limit!") do
+          queue.reset
+          state.reset!
+        end
+      end
+
+      def build_adaptive_mixin(method, queue, state, cfg, reg_name)
+        resp_parser = cfg[:response_parser]
+        Module.new do
+          define_method(method) do |*args, **options, &blk|
+            queue.shift
+            result = options.empty? ? super(*args, &blk) : super(*args, **options, &blk)
+            decreased = Hanikamu::RateLimit::Mixin.send(:apply_response_parser, resp_parser, result, state,
+                                                        reg_name)
+            state.record_success! unless decreased
+            result
+          end
+        end
+      end
+
+      # Runs the response_parser and applies AIMD / capture side-effects.
+      # Returns true when the parser signalled a rate decrease.
+      private_class_method def self.apply_response_parser(parser, result, state, reg_name)
+        return false unless parser
+
+        parsed = parser.call(result)
+        return false unless parsed.is_a?(Hash)
+
+        apply_temporary_limit(reg_name, parsed)
+
+        decreased = parsed[:decrease] == true
+        rate_before = state.current_rate
+        state.decrease_rate! if decreased
+        Hanikamu::RateLimit::Storage::EventCapture.capture_response(reg_name, result, parsed,
+                                                                    adaptive_rate: rate_before)
+        decreased
+      end
+
+      private_class_method def self.apply_temporary_limit(reg_name, parsed)
+        return unless parsed[:remaining]
+
+        Hanikamu::RateLimit.register_temporary_limit(
+          reg_name,
+          remaining: parsed[:remaining],
+          reset: parsed[:reset],
+          reset_kind: parsed[:reset_kind] || :seconds
+        )
+      end
+
+      def build_error_handling_mixin(method, state, cfg, reg_name)
+        errors = cfg[:error_classes]
+        parser = cfg[:header_parser]
+        Module.new do
+          define_method(method) do |*args, **options, &blk|
+            options.empty? ? super(*args, &blk) : super(*args, **options, &blk)
+          rescue *errors => e
+            rate_before = state.current_rate
+            state.handle_error(e, reg_name, parser)
+            Hanikamu::RateLimit::Storage::EventCapture.capture_exception(reg_name, e,
+                                                                         adaptive_rate: rate_before)
+            raise
+          end
+        end
+      end
+
+      # Injects a report_rate_limit_headers instance method so users can
+      # manually feed rate-limit data back to the adaptive state.
+      def build_report_headers_helper
+        Module.new do
+          def report_rate_limit_headers(registry_name, remaining:, reset:, reset_kind: :seconds)
+            Hanikamu::RateLimit.register_temporary_limit(
+              registry_name, remaining: remaining, reset: reset, reset_kind: reset_kind
+            )
+          end
+        end
       end
     end
   end

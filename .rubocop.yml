@@ -118,6 +118,7 @@ Metrics/PerceivedComplexity:
 Metrics/ModuleLength:
   Exclude:
     - 'lib/hanikamu/rate_limit/metrics.rb'
+    - 'lib/hanikamu/rate_limit/mixin.rb'
 
 Metrics/ParameterLists:
   Exclude:
@@ -130,6 +131,8 @@ Metrics/ClassLength:
   Max: 110
   Exclude:
     - 'lib/hanikamu/rate_limit/rate_queue.rb'
+    - 'lib/hanikamu/rate_limit.rb'
+    - 'lib/hanikamu/rate_limit/adaptive_state.rb'
 
 RSpec/BeforeAfterAll:
   Exclude:

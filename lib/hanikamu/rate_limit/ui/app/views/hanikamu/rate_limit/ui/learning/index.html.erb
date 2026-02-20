@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Rate Limit Learning UI</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #c9d1d9; --text-dim: #8b949e; --accent: #58a6ff;
+      --green: #3fb950; --red: #f85149; --yellow: #d29922; --purple: #bc8cff;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+           background: var(--bg); color: var(--text); line-height: 1.5; padding: 20px; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .header { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .header h1 { font-size: 20px; font-weight: 600; }
+    .back-link { font-size: 13px; }
+
+    .controls { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+    .controls select, .controls button {
+      background: var(--surface); color: var(--text); border: 1px solid var(--border);
+      padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    .controls select:hover, .controls button:hover { border-color: var(--accent); }
+    .btn-classify { background: var(--green); color: #000; border: none; font-weight: 600;
+                    padding: 4px 10px; border-radius: 6px; font-size: 11px; cursor: pointer; }
+    .btn-classify.ignore { background: var(--yellow); }
+    .btn-classify.reset { background: var(--text-dim); }
+    .btn-purge { background: var(--red); color: #fff; border: none; font-weight: 600; }
+
+    .filter-pills { display: flex; gap: 6px; }
+    .filter-pills a {
+      padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 500;
+      background: var(--surface); border: 1px solid var(--border);
+    }
+    .filter-pills a.active { background: var(--accent); color: #000; border-color: var(--accent); }
+
+    .events-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+    .events-table th, .events-table td {
+      padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); font-size: 13px;
+    }
+    .events-table th { color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+    .events-table tr:hover { background: var(--surface); }
+
+    .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; display: inline-block; }
+    .badge-exception { background: rgba(248,81,73,0.2); color: var(--red); }
+    .badge-response { background: rgba(88,166,255,0.2); color: var(--accent); }
+    .badge-unclassified { background: rgba(210,153,34,0.2); color: var(--yellow); }
+    .badge-rate_limit { background: rgba(248,81,73,0.2); color: var(--red); }
+    .badge-ignored { background: rgba(139,148,158,0.2); color: var(--text-dim); }
+
+    .count-pill { display: inline-block; min-width: 28px; text-align: center; padding: 2px 8px;
+                  border-radius: 10px; font-size: 12px; font-weight: 700;
+                  background: rgba(88,166,255,0.15); color: var(--accent); }
+
+    .mono { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; font-size: 12px; }
+    .dim { color: var(--text-dim); }
+    .empty-state { text-align: center; padding: 40px; color: var(--text-dim); }
+
+    .chart-container { background: var(--surface); border: 1px solid var(--border);
+                       border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+    .chart-container h3 { font-size: 14px; margin-bottom: 12px; }
+    .chart-container canvas { width: 100% !important; height: 200px !important; }
+
+    .actions-cell { display: flex; gap: 4px; flex-wrap: wrap; }
+    .actions-cell form { display: inline; }
+
+    .group-row { cursor: pointer; }
+    .group-row td:first-child::before { content: '\25B6'; margin-right: 6px; font-size: 10px;
+                                        color: var(--text-dim); transition: transform 0.15s; display: inline-block; }
+    .group-row.open td:first-child::before { transform: rotate(90deg); }
+
+    .detail-row { display: none; }
+    .detail-row.visible { display: table-row; }
+    .detail-cell { padding: 0 12px 12px 32px; }
+
+    .event-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+                  padding: 10px 14px; margin-bottom: 6px; font-size: 12px; }
+    .event-card:last-child { margin-bottom: 0; }
+    .event-field { margin-bottom: 4px; display: flex; gap: 8px; }
+    .event-field .label { color: var(--text-dim); min-width: 90px; flex-shrink: 0; font-weight: 500; }
+    .event-field .value { word-break: break-all; }
+    .event-field .value.mono { font-family: 'SF Mono', SFMono-Regular, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Learning UI</h1>
+    <a class="back-link" href="<%= engine_root %>">&larr; Dashboard</a>
+  </div>
+
+  <div class="controls">
+    <form method="get" action="<%= learning_url %>" style="display:flex;gap:8px;align-items:center;">
+      <label class="dim" style="font-size:12px;">Registry:</label>
+      <select name="registry" onchange="this.form.submit()">
+        <option value="">All</option>
+        <% @registry_names.each do |name| %>
+          <option value="<%= name %>" <%= 'selected' if name == @current_registry %>><%= name %></option>
+        <% end %>
+      </select>
+      <input type="hidden" name="filter" value="<%= @filter %>">
+    </form>
+
+    <div class="filter-pills">
+      <% %w[all unclassified rate_limit ignored].each do |f| %>
+        <a href="<%= learning_url(registry: @current_registry, filter: f) %>"
+           class="<%= 'active' if @filter == f %>"><%= f.tr('_', ' ') %></a>
+      <% end %>
+    </div>
+
+    <div style="margin-left:auto;">
+      <form method="post" action="<%= engine_root %>/learning/purge" style="display:inline;"
+            onsubmit="return confirm('Delete expired events and snapshots?')">
+        <input type="hidden" name="_method" value="delete">
+        <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+        <button type="submit" class="btn-purge">Purge expired</button>
+      </form>
+    </div>
+  </div>
+
+  <% if @snapshot_series.any? %>
+    <div class="chart-container">
+      <h3>Adaptive Rate History &mdash; <%= @current_registry %></h3>
+      <canvas id="rateHistoryChart"></canvas>
+    </div>
+  <% end %>
+
+  <% if @grouped_events.any? %>
+    <table class="events-table">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Detail</th>
+          <th>Count</th>
+          <th>Classification</th>
+          <th>Last Seen</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @grouped_events.each_with_index do |group, idx| %>
+          <tr class="group-row" data-group="<%= idx %>">
+            <td><span class="badge badge-<%= group[:event_type] %>"><%= group[:event_type] %></span></td>
+            <td>
+              <% if group[:event_type] == "exception" %>
+                <span class="mono"><%= group[:exception_class] %></span>
+              <% else %>
+                <span class="mono">HTTP <%= group[:response_status] %></span>
+              <% end %>
+            </td>
+            <td><span class="count-pill"><%= group[:count] %></span></td>
+            <td>
+              <span class="badge badge-<%= group[:classification] %>">
+                <%= group[:classification].tr('_', ' ') %>
+              </span>
+            </td>
+            <td class="dim" style="font-size:12px;">
+              <% if group[:last_seen_at] %>
+                <%= Time.parse(group[:last_seen_at].to_s).strftime('%H:%M:%S') rescue group[:last_seen_at] %>
+              <% end %>
+            </td>
+            <td>
+              <div class="actions-cell">
+                <% %w[rate_limit ignored unclassified].each do |cls| %>
+                  <% next if cls == group[:classification] %>
+                  <form method="post" action="<%= engine_root %>/learning/classify_group">
+                    <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+                    <input type="hidden" name="classification" value="<%= cls %>">
+                    <input type="hidden" name="registry" value="<%= @current_registry %>">
+                    <input type="hidden" name="filter" value="<%= @filter %>">
+                    <input type="hidden" name="event_type" value="<%= group[:event_type] %>">
+                    <% if group[:exception_class].present? %>
+                      <input type="hidden" name="exception_class" value="<%= group[:exception_class] %>">
+                    <% end %>
+                    <% if group[:response_status].present? %>
+                      <input type="hidden" name="response_status" value="<%= group[:response_status] %>">
+                    <% end %>
+                    <button type="submit"
+                            class="btn-classify <%= 'ignore' if cls == 'ignored' %> <%= 'reset' if cls == 'unclassified' %>">
+                      <%= { 'rate_limit' => 'Mark Rate Limit', 'ignored' => 'Ignore', 'unclassified' => 'Reset' }[cls] %>
+                    </button>
+                  </form>
+                <% end %>
+              </div>
+            </td>
+          </tr>
+          <tr class="detail-row" data-group-detail="<%= idx %>">
+            <td colspan="6" class="detail-cell">
+              <% group[:recent_events].each do |event| %>
+                <div class="event-card">
+                  <% if event.event_type == "exception" %>
+                    <div class="event-field">
+                      <span class="label">Class</span>
+                      <span class="value mono"><%= event.exception_class %></span>
+                    </div>
+                    <div class="event-field">
+                      <span class="label">Message</span>
+                      <span class="value"><%= event.exception_message %></span>
+                    </div>
+                  <% end %>
+                  <% if event.response_status.present? %>
+                    <div class="event-field">
+                      <span class="label">Status</span>
+                      <span class="value mono"><%= event.response_status %></span>
+                    </div>
+                  <% end %>
+                  <% if event.response_body_snippet.present? %>
+                    <div class="event-field">
+                      <span class="label">Body</span>
+                      <span class="value mono"><%= event.response_body_snippet %></span>
+                    </div>
+                  <% end %>
+                  <% if event.response_headers.present? %>
+                    <div class="event-field">
+                      <span class="label">Headers</span>
+                      <span class="value mono"><%= event.response_headers %></span>
+                    </div>
+                  <% end %>
+                  <% if event.http_method.present? || event.request_url.present? %>
+                    <div class="event-field">
+                      <span class="label">Request</span>
+                      <span class="value mono"><%= event.http_method %> <%= event.request_url %></span>
+                    </div>
+                  <% end %>
+                  <div class="event-field">
+                    <span class="label">Time</span>
+                    <span class="value dim"><%= event.created_at&.strftime('%Y-%m-%d %H:%M:%S') %></span>
+                  </div>
+                </div>
+              <% end %>
+              <% if group[:count] > 5 %>
+                <div class="dim" style="font-size:11px;margin-top:6px;">Showing 5 of <%= group[:count] %> events</div>
+              <% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% else %>
+    <div class="empty-state">
+      <p>No captured events<%= " for #{@current_registry}" if @current_registry.present? %>.</p>
+      <p class="dim" style="font-size:13px;margin-top:8px;">
+        Events are captured automatically when adaptive limits encounter errors or parse responses.
+      </p>
+    </div>
+  <% end %>
+
+  <script>
+    // Toggle expandable detail rows
+    document.querySelectorAll('.group-row').forEach(row => {
+      row.addEventListener('click', e => {
+        if (e.target.closest('form')) return; // don't toggle when clicking classify buttons
+        const idx = row.dataset.group;
+        const detail = document.querySelector(`[data-group-detail="${idx}"]`);
+        row.classList.toggle('open');
+        detail.classList.toggle('visible');
+      });
+    });
+
+    // Rate history chart
+    <% if @snapshot_series.any? %>
+    (function() {
+      const data = <%= @snapshot_series.to_json %>;
+      const markers = <%= @event_markers.to_json %>;
+      const labels = data.map(d => {
+        const dt = new Date(d[0] * 1000);
+        return dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      });
+      const rates = data.map(d => d[1]);
+
+      // Build event marker dataset: scatter points aligned to the nearest label index
+      const markerPoints = markers.map(m => {
+        let bestIdx = 0, bestDist = Infinity;
+        data.forEach((d, i) => {
+          const dist = Math.abs(d[0] - m[0]);
+          if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+        });
+        return { x: bestIdx, y: m[1] };
+      });
+
+      new Chart(document.getElementById('rateHistoryChart'), {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: 'Adaptive Rate',
+              data: rates,
+              borderColor: '#58a6ff',
+              backgroundColor: 'rgba(88,166,255,0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 2
+            },
+            {
+              label: 'Rate Limit Event',
+              data: markerPoints,
+              type: 'scatter',
+              borderColor: '#f85149',
+              backgroundColor: 'rgba(248,81,73,0.8)',
+              pointRadius: 5,
+              pointStyle: 'circle',
+              showLine: false
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: {
+              display: true,
+              labels: { color: '#8b949e', boxWidth: 12, font: { size: 11 } }
+            },
+            tooltip: {
+              callbacks: {
+                label: function(ctx) {
+                  if (ctx.datasetIndex === 1) return 'Rate limit event (rate: ' + ctx.parsed.y + ')';
+                  return 'Rate: ' + ctx.parsed.y;
+                }
+              }
+            }
+          },
+          scales: {
+            x: { ticks: { color: '#8b949e', maxTicksLimit: 12 }, grid: { color: '#21262d' } },
+            y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' },
+                 title: { display: true, text: 'Rate (req/interval)', color: '#8b949e' } }
+          }
+        }
+      });
+    })();
+    <% end %>
+  </script>
+</body>
+</html>

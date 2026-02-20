@@ -1,10 +1,17 @@
-version: "3"
 networks:
   docker-compose-example-tier:
     driver: bridge
 services:
   redis:
     image: redis:7-alpine
+    networks:
+      - docker-compose-example-tier
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: hanikamu
+      POSTGRES_PASSWORD: hanikamu
+      POSTGRES_DB: hanikamu_rate_limit_dummy
     networks:
       - docker-compose-example-tier
   app:
@@ -14,9 +21,11 @@ services:
     environment:
       HISTFILE: /app/tmp/ash_history
       REDIS_URL: redis://redis:6379/15
+      DATABASE_URL: postgres://hanikamu:hanikamu@postgres:5432/hanikamu_rate_limit_dummy
     volumes:
       - .:/app
     networks:
       - docker-compose-example-tier
     depends_on:
       - redis
+      - postgres

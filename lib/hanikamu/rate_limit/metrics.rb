@@ -203,10 +203,14 @@ module Hanikamu
       end
 
       def entry_from_meta(limit_key, meta)
-        { limit_key: limit_key, rate: meta.fetch("rate").to_i, interval: meta.fetch("interval").to_f,
+        rate = meta.fetch("rate").to_i
+        interval = meta.fetch("interval").to_f
+        registry = meta["registry"]
+        { limit_key: limit_key, rate: rate, interval: interval,
           klass_name: meta["klass_name"], method_name: meta["method"],
-          registry: meta["registry"], key_prefix: meta.fetch("key_prefix"),
-          metrics_enabled: resolve_effective_metrics(meta["registry"]) }
+          registry: registry, key_prefix: meta.fetch("key_prefix"),
+          metrics_enabled: resolve_effective_metrics(registry),
+          config: build_entry_config(registry) || build_inline_config(rate, interval) }
       end
 
       def build_registry_entries
@@ -217,7 +221,8 @@ module Hanikamu
           interval = cfg.fetch(:interval).to_f
           { limit_key: build_limit_key(key_prefix, rate, interval),
             rate: rate, interval: interval, registry: reg_key, key_prefix: key_prefix,
-            metrics_enabled: resolve_effective_metrics(reg_key) }
+            metrics_enabled: resolve_effective_metrics(reg_key),
+            config: build_entry_config(reg_key) }
         rescue Dry::Container::Error, KeyError
           nil
         end
@@ -310,7 +315,8 @@ module Hanikamu
           "registry" => entry[:registry]&.to_s, "key_prefix" => entry[:key_prefix],
           "metrics_enabled" => entry[:metrics_enabled],
           "current_count" => current_count,
-          "current_remaining" => [entry[:rate] - current_count, 0].max }
+          "current_remaining" => [entry[:rate] - current_count, 0].max,
+          "config" => entry[:config] }
       end
 
       def snapshot_aggregates(base_data)
@@ -624,6 +630,108 @@ module Hanikamu
         flag.nil? ? Hanikamu::RateLimit.config.metrics_enabled : flag
       rescue Dry::Container::Error, KeyError, ArgumentError
         Hanikamu::RateLimit.config.metrics_enabled
+      end
+
+      def build_inline_config(rate, interval)
+        global = Hanikamu::RateLimit.config
+        {
+          "adaptive" => false,
+          "rate" => rate,
+          "interval" => interval,
+          "check_interval" => global.check_interval,
+          "max_wait_time" => global.max_wait_time,
+          "metrics" => global.metrics_enabled
+        }
+      end
+
+      # Builds a config hash for a registry entry.
+      # Returns nil for non-registry (inline) limits.
+      def build_entry_config(registry_key)
+        return nil if registry_key.nil? || registry_key.to_s.empty?
+
+        cfg = Hanikamu::RateLimit.fetch_limit(registry_key.to_sym)
+        base = registry_base_config(cfg)
+        cfg[:adaptive] ? base.merge(adaptive_config(cfg, registry_key)) : base
+      rescue Dry::Container::Error, KeyError, ArgumentError
+        nil
+      end
+
+      def registry_base_config(cfg)
+        global = Hanikamu::RateLimit.config
+        {
+          "adaptive" => cfg[:adaptive] == true,
+          "rate" => cfg[:rate],
+          "interval" => cfg[:interval],
+          "check_interval" => cfg[:check_interval] || global.check_interval,
+          "max_wait_time" => cfg[:max_wait_time] || global.max_wait_time,
+          "metrics" => cfg.fetch(:metrics, nil).nil? ? global.metrics_enabled : cfg[:metrics]
+        }
+      end
+
+      def adaptive_config(cfg, registry_key)
+        state = adaptive_state_snapshot(registry_key)
+        adaptive_tuning_hash(cfg)
+          .merge(adaptive_feedback_hash(cfg))
+          .merge(adaptive_history_hash(registry_key))
+          .merge(state)
+      end
+
+      def adaptive_tuning_hash(cfg)
+        {
+          "initial_rate" => cfg[:initial_rate],
+          "min_rate" => cfg[:min_rate],
+          "max_rate" => cfg[:max_rate],
+          "increase_by" => cfg[:increase_by],
+          "decrease_factor" => cfg[:decrease_factor],
+          "probe_window" => cfg[:probe_window],
+          "cooldown_after_decrease" => cfg[:cooldown_after_decrease]
+        }
+      end
+
+      def adaptive_feedback_hash(cfg)
+        {
+          "error_classes" => Array(cfg[:error_classes]).map(&:name),
+          "has_header_parser" => !cfg[:header_parser].nil?,
+          "has_response_parser" => !cfg[:response_parser].nil?
+        }
+      end
+
+      def adaptive_history_hash(registry_key)
+        {
+          "rate_history" => rate_history_series(registry_key),
+          "event_markers" => event_marker_series(registry_key)
+        }
+      end
+
+      def adaptive_state_snapshot(registry_key)
+        adaptive = Hanikamu::RateLimit.fetch_adaptive_state(registry_key.to_sym)
+        s = adaptive.state
+        { "current_rate" => s[:current_rate],
+          "cooldown_active" => s[:cooldown_active] }
+      rescue ArgumentError
+        {}
+      end
+
+      # Returns rate history from DB snapshots for the dashboard chart.
+      def rate_history_series(registry_key)
+        Storage::RateSnapshot.chart_series(registry_key.to_s, since: 24.hours.ago)
+      rescue StandardError
+        []
+      end
+
+      # Returns [[epoch, adaptive_rate], ...] for events classified as rate_limit.
+      # Each entry carries the adaptive rate at capture time (pre-decrease)
+      # so the dashboard dot sits at the correct y-position.
+      def event_marker_series(registry_key)
+        Storage::CapturedEvent
+          .for_registry(registry_key.to_s)
+          .rate_limit_signals
+          .where(created_at: 24.hours.ago..)
+          .order(:created_at)
+          .pluck(:created_at, :adaptive_rate)
+          .map { |ts, rate| [ts.to_i, rate || 0] }
+      rescue StandardError
+        []
       end
 
       def limit_meta_key(limit_key)        = "#{LIMIT_META_PREFIX}#{limit_key}"

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.5.0 - 2026-02-20
+
+### Added
+
+- **Adaptive rate limiting (AIMD)** — `register_adaptive_limit` introduces TCP-style congestion control for APIs with unknown or variable rate limits. The rate starts at `initial_rate` and adjusts automatically:
+  - **Additive increase** — after `probe_window` seconds of success, the rate increases by `increase_by` (capped at `max_rate`).
+  - **Multiplicative decrease** — when an `error_classes` exception is caught, the rate is multiplied by `decrease_factor` (floored at `min_rate`), followed by a `cooldown_after_decrease` pause before probing again.
+  - **Header parsing** — optional `header_parser` lambda extracts `remaining`/`reset` from error responses and feeds `register_temporary_limit` for precise recovery.
+  - All AIMD state is persisted in Redis via Lua scripts for atomicity and cross-process consistency.
+- **`AdaptiveState`** class — manages AIMD state (current rate, cooldown timestamps, probe window) with local caching (`RATE_CACHE_TTL = 1s`) to minimise Redis reads.
+- **`fetch_adaptive_state`** — returns (or lazily creates) the `AdaptiveState` for a named adaptive limit.
+- **Adaptive mixin wrapper** — `limit_method` with an adaptive registry automatically installs a rescue-based wrapper that calls `record_success!` on success and `handle_error` on `error_classes` exceptions.
+- **`response_parser:` option** — optional lambda on `register_adaptive_limit` that receives the return value of every successful call. When it returns `{ remaining:, reset: }`, the gem feeds `register_temporary_limit` — giving precise tracking from every response, not just errors.
+- **`report_rate_limit_headers` instance helper** — available on classes using adaptive limits; manually feeds rate-limit data (remaining, reset, reset_kind) back to the gem from inside the method body.
+- **`reset_limit!` for adaptive limits** — clears both the sliding-window key and the learned AIMD state.
+- **Storage module** — new ActiveRecord models and services for persisting rate-limit telemetry:
+  - `CapturedEvent` and `EventCapture` — record exceptions and HTTP responses with encrypted sensitive columns (`exception_message`, `response_headers`, `response_body_snippet`).
+  - `RateSnapshot` and `SnapshotRecorder` — periodically snapshot the adaptive `current_rate` so the dashboard can chart historical limit changes.
+  - `RetentionCleanup` — prune old events and snapshots based on configurable retention periods.
+- **Learning UI (`/learning`)** — interactive web endpoint for reviewing captured events and classifying them as rate-limit signals or noise, improving adaptive configuration over time.
+- **Dashboard enhancements** — event-marker dots (red scatter points) on charts for classified rate-limit events; live `current_rate` injected into the 5-minute chart for precise limit tracking.
+- **Configuration** — three new settings on `Hanikamu::RateLimit.configure`:
+  - `event_retention` — how long captured events are kept before cleanup.
+  - `snapshot_interval` — how often `SnapshotRecorder` records `RateSnapshot` entries.
+  - `snapshot_retention` — how long snapshots are retained.
+- **Rails generator** — `rails generate hanikamu_rate_limit:install` creates the required database migrations for the Storage module.
+- **Validation** — `increase_by`, `probe_window`, and `cooldown_after_decrease` are now validated as positive numbers.
+
+### Infrastructure
+
+- **PostgreSQL database** — v0.5.0 introduces database-backed storage for learning and telemetry. A PostgreSQL database must be configured and migrations run to use Storage or Learning UI features.
+- **ActiveRecord::Encryption** — fields containing sensitive request/response data are encrypted at rest. Configure Rails' encryption keys before deploying.
+
 ## 0.4.2 - 2026-02-20
 
 ### Added
