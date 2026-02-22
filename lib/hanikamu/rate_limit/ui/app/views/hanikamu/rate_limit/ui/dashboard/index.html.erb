@@ -304,6 +304,19 @@
         color: var(--muted);
       }
 
+      .config-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px 10px;
+        font-family: ui-monospace, "SFMono-Regular", "Cascadia Code", "Consolas", monospace;
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .config-line span[data-config-key] {
+        color: var(--ink);
+      }
+
       .empty {
         padding: 40px 20px;
         background: var(--card);
@@ -390,7 +403,10 @@
     <div class="page">
       <header>
         <h1 class="title">Rate Limit Metrics</h1>
-        <p class="subtitle">Live limits, last 24 hours, and override status.</p>
+        <p class="subtitle">
+          Live limits, last 24 hours, and override status.
+          <a href="<%= engine_root %>/learning" style="margin-left: 12px; font-size: 13px;">Learning UI &rarr;</a>
+        </p>
       </header>
 
       <section class="summary" id="summary-cards">
@@ -447,11 +463,19 @@
                 <span class="metrics-badge metrics-badge--<%= limit.metrics_enabled? ? 'on' : 'off' %>" data-stat="metrics-badge"><%= limit.metrics_enabled? ? 'Enabled' : 'Disabled' %></span>
               </div>
 
+              <% if limit.config? %>
+                <div class="config-line" data-config>
+                  <% limit.config_items.each do |item| %>
+                    <span><%= item[:label] %>: <span data-config-key="<%= item[:label] %>"><%= item[:value] %></span></span>
+                  <% end %>
+                </div>
+              <% end %>
+
               <div class="stats">
                 <div class="stats-row">
                   <div class="stat">
                     <div class="label">Rate limit</div>
-                    <div class="value" data-stat="rate"><%= limit.rate %> / <%= limit.interval_formatted %>s</div>
+                    <div class="value" data-stat="rate"><%= limit.effective_rate %> / <%= limit.interval_formatted %>s</div>
                   </div>
                   <div class="stat">
                     <div class="label">Hits / sec</div>
@@ -537,8 +561,18 @@
 
       const safeNum = (value) => Number(value) || 0;
 
+      // For adaptive limits, use the live current_rate; otherwise use the static rate.
+      const effectiveRate = (limit) => {
+        const cfg = limit.config;
+        if (cfg && cfg.adaptive && cfg.current_rate != null) return safeNum(cfg.current_rate);
+        return safeNum(limit.rate);
+      };
+
       const chartData = new Map();
       const chartInstances = new Map();
+      // Accumulates [epoch, rate] from each SSE tick per limit key.
+      // Used for the 5-min chart so it doesn't depend on stale DB snapshots.
+      const liveRateLog = new Map();
 
       const padSeries = (series, length) => {
         const normalized = (series || []).slice(0, length);
@@ -565,6 +599,78 @@
         return `${date.getUTCHours().toString().padStart(2, "0")}:${date.getUTCMinutes().toString().padStart(2, "0")}:${date.getUTCSeconds().toString().padStart(2, "0")}`;
       };
 
+      // Build a per-bucket limit series from rate_history snapshots.
+      // rateHistory: [[epoch, rate], ...], bucketTimestamps: [epoch, ...],
+      // bucketWidth: seconds per chart bucket, interval: limit interval.
+      // For each bucket, finds the snapshot that was active at the bucket's
+      // START (not end) to avoid showing a post-decrease rate for traffic
+      // that was allowed at the pre-decrease rate.
+      const buildHistoricalLimitSeries = (rateHistory, bucketTimestamps, bucketWidth, interval, flatValue) => {
+        if (!rateHistory || rateHistory.length === 0 || !bucketTimestamps || bucketTimestamps.length === 0) {
+          return new Array(bucketTimestamps?.length || 0).fill(flatValue);
+        }
+        const scale = bucketWidth / interval;
+        return bucketTimestamps.map((ts) => {
+          // Find the most recent snapshot at or before the bucket start
+          let best = null;
+          for (let i = rateHistory.length - 1; i >= 0; i--) {
+            if (rateHistory[i][0] <= ts) {
+              best = rateHistory[i][1];
+              break;
+            }
+          }
+          return best !== null ? best * scale : flatValue;
+        });
+      };
+
+      // Build scatter points from event marker timestamps [epoch, ...]
+      // Build scatter points from event markers [[epoch, rate], ...]
+      // Maps each marker to the nearest bucket label (for correct x-position
+      // on a category axis) and uses the stored pre-decrease adaptive rate for y.
+      // Markers outside the visible bucket range are filtered out.
+      const buildEventMarkerPoints = (markers, bucketTimestamps, bucketWidth, labels, scale) => {
+        if (!markers || markers.length === 0 || !bucketTimestamps || bucketTimestamps.length === 0) return [];
+        const rangeStart = bucketTimestamps[0];
+        const rangeEnd = bucketTimestamps[bucketTimestamps.length - 1] + bucketWidth;
+        return markers
+          .filter((m) => m[0] >= rangeStart && m[0] <= rangeEnd)
+          .map((m) => {
+            let bestIdx = 0, bestDist = Infinity;
+            bucketTimestamps.forEach((ts, i) => {
+              const dist = Math.abs(ts - m[0]);
+              if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+            });
+            return { x: labels[bestIdx], y: (m[1] || 0) * scale, rawRate: m[1] || 0 };
+          });
+      };
+
+      const renderConfigHtml = (limit) => {
+        const cfg = limit.config;
+        if (!cfg) return '';
+
+        const items = buildConfigItems(cfg);
+        const spans = items.map(([label, value]) =>
+          `<span>${escapeHtml(label)}: <span data-config-key="${escapeHtml(label)}">${escapeHtml(value)}</span></span>`
+        ).join("");
+
+        return `<div class="config-line" data-config>${spans}</div>`;
+      };
+
+      const buildConfigItems = (cfg) => {
+        if (cfg.adaptive) {
+          return [
+            ["current_rate", cfg.current_rate ?? "—"],
+            ["range", `${cfg.min_rate} – ${cfg.max_rate ?? "∞"}`],
+            ["interval", `${cfg.interval}s`],
+            ["cooldown", cfg.cooldown_active ? "active" : "idle"]
+          ];
+        }
+        return [
+          ["rate", cfg.rate],
+          ["interval", `${cfg.interval}s`]
+        ];
+      };
+
       const renderCharts = () => {
         const charts = document.querySelectorAll("[data-key]");
         charts.forEach((chart) => {
@@ -580,9 +686,15 @@
           const length = labels.length;
           const allowedSeries = padSeries(data?.allowed || [], length);
           const blockedSeries = padSeries(data?.blocked || [], length);
-          const limitSeries = new Array(length).fill(limitValue);
-          const maxVal = Math.max(limitValue, ...allowedSeries, 1);
+          const limitSeries = (data?.isAdaptive && data?.rateHistory?.length > 0)
+            ? buildHistoricalLimitSeries(data.rateHistory, data.bucketTimestamps, data.bucketWidth, data.interval, limitValue)
+            : new Array(length).fill(limitValue);
+          const maxVal = Math.max(...limitSeries, ...allowedSeries, 1);
           const blockedBand = blockedSeries.map((v) => v > 0 ? maxVal * 2 : 0);
+          const scale = (data?.bucketWidth || 1) / (data?.interval || 1);
+          const markerPoints = data?.isAdaptive
+            ? buildEventMarkerPoints(data.eventMarkers || [], data.bucketTimestamps || [], data.bucketWidth || 1, labels, scale)
+            : [];
 
           const instanceKey = `${key}:${scope}`;
           const existing = chartInstances.get(instanceKey);
@@ -591,6 +703,7 @@
             existing.data.datasets[0].data = blockedBand;
             existing.data.datasets[1].data = limitSeries;
             existing.data.datasets[2].data = allowedSeries;
+            if (existing.data.datasets[3]) existing.data.datasets[3].data = markerPoints;
             existing.update("none");
             return;
           }
@@ -632,6 +745,17 @@
                   tension: 0.3,
                   fill: true,
                   order: 1
+                },
+                {
+                  label: "Rate Limit Event",
+                  data: markerPoints,
+                  type: "scatter",
+                  borderColor: "rgba(248, 81, 73, 0.9)",
+                  backgroundColor: "rgba(248, 81, 73, 0.7)",
+                  pointRadius: 5,
+                  pointStyle: "circle",
+                  showLine: false,
+                  order: 0
                 }
               ]
             },
@@ -658,7 +782,16 @@
                   enabled: true,
                   mode: "index",
                   intersect: false,
-                  filter: (item) => item.dataset.label !== "Blocked"
+                  filter: (item) => item.dataset.label !== "Blocked",
+                  callbacks: {
+                    label: function(ctx) {
+                      if (ctx.dataset.label === "Rate Limit Event") {
+                        const raw = ctx.raw?.rawRate ?? ctx.parsed.y;
+                        return "Rate limit event (rate: " + raw + ")";
+                      }
+                      return ctx.dataset.label + ": " + ctx.parsed.y;
+                    }
+                  }
                 }
               },
               scales: {
@@ -723,7 +856,7 @@
         payload.limits.forEach((limit, idx) => {
           const history = limit.history || { allowed: [], blocked: [], buckets: [] };
           const realtimeHistory = limit.realtime_history || { allowed: [], blocked: [], buckets: [] };
-          const limitPerBucket = (Number(limit.rate) || 0) * (payload.bucket_seconds / Number(limit.interval || 1));
+          const limitPerBucket = effectiveRate(limit) * (payload.bucket_seconds / Number(limit.interval || 1));
           const labels = (history.buckets || []).map((bucket) => {
             const date = new Date(bucket * 1000);
             return `${date.getUTCHours().toString().padStart(2, "0")}:${date.getUTCMinutes().toString().padStart(2, "0")}`;
@@ -735,24 +868,57 @@
           const lastRealtimeBlocked = rtBlocked.length > 1 ? rtBlocked[rtBlocked.length - 2] : (rtBlocked[0] || 0);
           const interval = Number(limit.interval || 1);
           const effectiveBucket = Math.max(Math.ceil(interval), 1);
-          const realtimeLimit = (Number(limit.rate) || 0) * (effectiveBucket / interval);
+          const realtimeLimit = effectiveRate(limit) * (effectiveBucket / interval);
           const aggAllowed = aggregateBuckets(realtimeHistory.buckets, realtimeHistory.allowed, interval);
           const aggBlocked = aggregateBuckets(realtimeHistory.buckets, realtimeHistory.blocked, interval);
           const realtimeLabels = aggAllowed.buckets.map(formatRealtimeLabel);
 
           if (limit.key_prefix) {
+            const isAdaptive = !!(limit.config && limit.config.adaptive);
+            const rateHistory = isAdaptive ? (limit.config.rate_history || []) : [];
+            const eventMarkers = isAdaptive ? (limit.config.event_markers || []) : [];
+            const nowEpoch = Math.floor(Date.now() / 1000);
+
+            // For 24h chart: DB snapshots + a live "now" point so the
+            // most recent bucket reflects the actual current_rate.
+            const longRateHistory = isAdaptive && limit.config.current_rate != null
+              ? [...rateHistory, [nowEpoch, limit.config.current_rate]]
+              : rateHistory;
+
+            // For 5-min chart: start with only the live current_rate.
+            // DB snapshots are too coarse for this window — liveRateLog
+            // accumulates every SSE tick (2 s) and fills in quickly.
+            if (isAdaptive && !liveRateLog.has(limit.key_prefix)) {
+              const log = [];
+              if (limit.config.current_rate != null) log.push([nowEpoch, limit.config.current_rate]);
+              liveRateLog.set(limit.key_prefix, log);
+            }
+            const shortRateHistory = isAdaptive ? (liveRateLog.get(limit.key_prefix) || []) : [];
+
             chartData.set(`${limit.key_prefix}:long`, {
               allowed: history.allowed || [],
               blocked: history.blocked || [],
               limit: limitPerBucket,
-              labels: labels
+              labels: labels,
+              isAdaptive: isAdaptive,
+              rateHistory: longRateHistory,
+              eventMarkers: eventMarkers,
+              bucketTimestamps: history.buckets || [],
+              bucketWidth: payload.bucket_seconds,
+              interval: interval
             });
 
             chartData.set(`${limit.key_prefix}:short`, {
               allowed: aggAllowed.values,
               blocked: aggBlocked.values,
               limit: realtimeLimit,
-              labels: realtimeLabels
+              labels: realtimeLabels,
+              isAdaptive: isAdaptive,
+              rateHistory: shortRateHistory,
+              eventMarkers: eventMarkers,
+              bucketTimestamps: aggAllowed.buckets,
+              bucketWidth: effectiveBucket,
+              interval: interval
             });
           }
         });
@@ -770,7 +936,7 @@
             const rtBlocked = realtimeHistory.blocked || [];
             const allowed5m = rtAllowed.reduce((s, v) => s + v, 0);
             const blocked5m = rtBlocked.reduce((s, v) => s + v, 0);
-            const limitPerBucket = (Number(limit.rate) || 0) * (payload.bucket_seconds / Number(limit.interval || 1));
+            const limitPerBucket = effectiveRate(limit) * (payload.bucket_seconds / Number(limit.interval || 1));
             const lastRealtimeHits = rtAllowed.length > 1
               ? rtAllowed[rtAllowed.length - 2]
               : 0;
@@ -782,7 +948,7 @@
             const identifier = limit.registry || `${limit.klass_name}#${limit.method}`;
             const interval = Number(limit.interval || 1);
             const effectiveBucket = Math.max(Math.ceil(interval), 1);
-            const rtLimitPerBucket = (Number(limit.rate) || 0) * (effectiveBucket / interval);
+            const rtLimitPerBucket = effectiveRate(limit) * (effectiveBucket / interval);
             const realtimeLimitLabel = Number.isFinite(rtLimitPerBucket) ? rtLimitPerBucket.toFixed(2) : "0.00";
             const limitLabel = Number.isFinite(limitPerBucket) ? limitPerBucket.toFixed(2) : "0.00";
 
@@ -795,9 +961,10 @@
                   </div>
                   <span class="metrics-badge metrics-badge--${limit.metrics_enabled ? 'on' : 'off'}" data-stat="metrics-badge">${limit.metrics_enabled ? 'Enabled' : 'Disabled'}</span>
                 </div>
+                ${renderConfigHtml(limit)}
                 <div class="stats">
                   <div class="stats-row">
-                    <div class="stat"><div class="label">Rate limit</div><div class="value" data-stat="rate">${safeNum(limit.rate)} / ${safeNum(limit.interval).toFixed(2)}s</div></div>
+                    <div class="stat"><div class="label">Rate limit</div><div class="value" data-stat="rate">${effectiveRate(limit)} / ${safeNum(limit.interval).toFixed(2)}s</div></div>
                     <div class="stat"><div class="label">Hits / sec</div><div class="value" data-stat="hits">${safeNum(lastRealtimeHits)}</div></div>
                     <div class="stat"><div class="label">Blocked / sec</div><div class="value" data-stat="blocked">${safeNum(lastRealtimeBlocked)}</div></div>
                   </div>
@@ -851,7 +1018,8 @@
             const history = limit.history || { allowed: [], blocked: [], buckets: [] };
             const allowedTotal24h = (history.allowed || []).reduce((sum, v) => sum + v, 0);
             const blockedTotal24h = (history.blocked || []).reduce((sum, v) => sum + v, 0);
-            const limitPerBucket = (Number(limit.rate) || 0) * (payload.bucket_seconds / Number(limit.interval || 1));
+            const eRate = effectiveRate(limit);
+            const limitPerBucket = eRate * (payload.bucket_seconds / Number(limit.interval || 1));
             const rtAllowed2 = realtimeHistory.allowed || [];
             const rtBlocked2 = realtimeHistory.blocked || [];
             const allowed5m = rtAllowed2.reduce((s, v) => s + v, 0);
@@ -871,6 +1039,9 @@
             setVal('[data-stat="allowed-all"]', lifetime.allowed);
             setVal('[data-stat="blocked-all"]', lifetime.blocked);
 
+            // Update the rate stat for adaptive limits
+            setVal('[data-stat="rate"]', `${eRate} / ${Number(limit.interval || 1).toFixed(2)}s`);
+
             const longLegend = card.querySelector('[data-key]:not([data-scope="short"])');
             if (longLegend) {
               const spans = longLegend.querySelectorAll('.legend span');
@@ -879,7 +1050,7 @@
 
             const interval = Number(limit.interval || 1);
             const effectiveBucket = Math.max(Math.ceil(interval), 1);
-            const rtLimitPerBucket = (Number(limit.rate) || 0) * (effectiveBucket / interval);
+            const rtLimitPerBucket = eRate * (effectiveBucket / interval);
             const shortLegend = card.querySelector('[data-scope="short"]');
             if (shortLegend) {
               const rtLimitEl = shortLegend.querySelector('[data-legend="rt-limit"]');
@@ -891,6 +1062,74 @@
               const metricsOn = !!limit.metrics_enabled;
               badgeEl.className = `metrics-badge metrics-badge--${metricsOn ? 'on' : 'off'}`;
               badgeEl.textContent = metricsOn ? 'Enabled' : 'Disabled';
+            }
+
+            // Update live config values for adaptive limits
+            if (limit.config) {
+              const cfg = limit.config;
+              const setConfig = (key, val) => {
+                const el = card.querySelector(`[data-config-key="${key}"]`);
+                if (el) el.textContent = val ?? "—";
+              };
+              if (cfg.adaptive) {
+                setConfig("current_rate", cfg.current_rate);
+                setConfig("range", `${cfg.min_rate} – ${cfg.max_rate ?? "∞"}`);
+                setConfig("cooldown", cfg.cooldown_active ? "active" : "idle");
+              }
+            }
+
+            // Update chart limit lines with the (possibly changed) effective rate
+            const isAdaptiveUpd = !!(limit.config && limit.config.adaptive);
+            const rateHistoryUpd = isAdaptiveUpd ? (limit.config.rate_history || []) : [];
+            const eventMarkersUpd = isAdaptiveUpd ? (limit.config.event_markers || []) : [];
+            const nowEpochUpd = Math.floor(Date.now() / 1000);
+
+            // Append live current_rate to DB snapshots for the 24h chart
+            const longRateHistoryUpd = isAdaptiveUpd && limit.config.current_rate != null
+              ? [...rateHistoryUpd, [nowEpochUpd, limit.config.current_rate]]
+              : rateHistoryUpd;
+
+            // Append live point to the in-memory log for the 5-min chart
+            if (isAdaptiveUpd && limit.config.current_rate != null) {
+              const log = liveRateLog.get(limit.key_prefix) || [];
+              log.push([nowEpochUpd, limit.config.current_rate]);
+              // Trim entries older than 6 minutes to bound memory
+              const cutoff = nowEpochUpd - 360;
+              while (log.length > 0 && log[0][0] < cutoff) log.shift();
+              liveRateLog.set(limit.key_prefix, log);
+            }
+            const shortRateHistoryUpd = isAdaptiveUpd ? (liveRateLog.get(limit.key_prefix) || []) : [];
+
+            const longCD = chartData.get(`${limit.key_prefix}:long`);
+            if (longCD) {
+              longCD.limit = limitPerBucket;
+              longCD.allowed = history.allowed || [];
+              longCD.blocked = history.blocked || [];
+              longCD.labels = (history.buckets || []).map((b) => {
+                const d = new Date(b * 1000);
+                return `${d.getUTCHours().toString().padStart(2,"0")}:${d.getUTCMinutes().toString().padStart(2,"0")}`;
+              });
+              longCD.isAdaptive = isAdaptiveUpd;
+              longCD.rateHistory = longRateHistoryUpd;
+              longCD.eventMarkers = eventMarkersUpd;
+              longCD.bucketTimestamps = history.buckets || [];
+              longCD.bucketWidth = payload.bucket_seconds;
+              longCD.interval = interval;
+            }
+            const shortCD = chartData.get(`${limit.key_prefix}:short`);
+            if (shortCD) {
+              const aggA = aggregateBuckets(realtimeHistory.buckets, realtimeHistory.allowed, interval);
+              const aggB = aggregateBuckets(realtimeHistory.buckets, realtimeHistory.blocked, interval);
+              shortCD.limit = rtLimitPerBucket;
+              shortCD.allowed = aggA.values;
+              shortCD.blocked = aggB.values;
+              shortCD.labels = aggA.buckets.map(formatRealtimeLabel);
+              shortCD.isAdaptive = isAdaptiveUpd;
+              shortCD.rateHistory = shortRateHistoryUpd;
+              shortCD.eventMarkers = eventMarkersUpd;
+              shortCD.bucketTimestamps = aggA.buckets;
+              shortCD.bucketWidth = effectiveBucket;
+              shortCD.interval = interval;
             }
 
             const overrideEl = card.querySelector('.override');

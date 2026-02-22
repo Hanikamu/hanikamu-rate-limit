@@ -1,12 +1,14 @@
 # frozen_string_literal: true
 
 require_relative "override_helpers"
+require_relative "config_helpers"
 
 module Hanikamu
   module RateLimit
     module UI
       class LimitPresenter
         include OverrideHelpers
+        include ConfigHelpers
 
         EMPTY_HISTORY = { "allowed" => [], "blocked" => [], "buckets" => [] }.freeze
         EMPTY_LIFETIME = { "allowed" => 0, "blocked" => 0 }.freeze
@@ -30,6 +32,12 @@ module Hanikamu
           data.fetch("rate")
         end
 
+        # For adaptive limits, returns the live current_rate from the AIMD state;
+        # for fixed limits, falls back to the registered rate.
+        def effective_rate
+          (adaptive? && config&.dig("current_rate")) || rate
+        end
+
         def interval
           data.fetch("interval")
         end
@@ -39,7 +47,7 @@ module Hanikamu
         end
 
         def limit_per_bucket
-          rate * (dashboard.bucket_seconds.to_f / interval)
+          effective_rate * (dashboard.bucket_seconds.to_f / interval)
         end
 
         def limit_per_bucket_formatted
@@ -51,7 +59,7 @@ module Hanikamu
         end
 
         def realtime_limit_per_bucket
-          rate * (effective_realtime_bucket_seconds.to_f / interval)
+          effective_rate * (effective_realtime_bucket_seconds.to_f / interval)
         end
 
         def realtime_limit_per_bucket_formatted

@@ -24,7 +24,7 @@ dummy: ## generate the dummy Rails app for UI preview
 	docker-compose run --rm app bash -c "\
 		rm -rf spec/dummy && \
 		bundle exec rails new spec/dummy \
-			--skip-bundle --skip-active-record --skip-action-mailer \
+			--skip-bundle --skip-action-mailer \
 			--skip-action-mailbox --skip-action-text --skip-active-storage \
 			--skip-action-cable --skip-javascript --skip-hotwire \
 			--skip-asset-pipeline --skip-jbuilder --skip-system-test \
@@ -35,17 +35,23 @@ dummy: ## generate the dummy Rails app for UI preview
 		cp spec/dummy_config/config/boot.rb spec/dummy/config/boot.rb && \
 		cp spec/dummy_config/config/puma.rb spec/dummy/config/puma.rb && \
 		cp spec/dummy_config/config/routes.rb spec/dummy/config/routes.rb && \
+		cp spec/dummy_config/config/database.yml spec/dummy/config/database.yml && \
 		mkdir -p spec/dummy/config/initializers && \
 		cp spec/dummy_config/config/initializers/hanikamu_rate_limit.rb spec/dummy/config/initializers/hanikamu_rate_limit.rb && \
+		cp spec/dummy_config/config/initializers/active_record_encryption.rb spec/dummy/config/initializers/active_record_encryption.rb && \
 		mkdir -p spec/dummy/script && \
-		cp spec/dummy_config/script/seed_rate_limits.rb spec/dummy/script/seed_rate_limits.rb \
+		cp spec/dummy_config/script/seed_rate_limits.rb spec/dummy/script/seed_rate_limits.rb && \
+		mkdir -p spec/dummy/app/controllers && \
+		cp spec/dummy_config/app/controllers/api_controller.rb spec/dummy/app/controllers/api_controller.rb \
 	"
 
-.PHONY: dummy-server
-dummy-server: dummy ## run the dummy Rails app with seed traffic
+.PHONY: up
+up: dummy ## start dummy app with Postgres, Redis, generator, migrations, and seed traffic
 	docker-compose run --rm -p 3000:3000 app bash -c "\
 		cd spec/dummy && bundle install && \
-		(bundle exec ruby script/seed_rate_limits.rb &) && \
+		bundle exec rails generate hanikamu_rate_limit:install && \
+		bundle exec rails db:drop db:create db:migrate && \
+		(bundle exec rails runner script/seed_rate_limits.rb &) && \
 		bundle exec rails s -b 0.0.0.0 -p 3000 \
 	"
 

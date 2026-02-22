@@ -92,6 +92,15 @@ module Hanikamu
         return {0, interval}
       LUA
 
+      # Public readers used by AdaptiveState to check utilization.
+      attr_reader :interval
+
+      # Returns the Redis key for the sliding window sorted set.
+      # Used by AdaptiveState#attach_sliding_window.
+      def sliding_window_key
+        redis_key
+      end
+
       def initialize(
         rate,
         klass_name:,
@@ -102,6 +111,7 @@ module Hanikamu
         check_interval: nil,
         max_wait_time: nil,
         metrics: nil,
+        adaptive_state: nil,
         &block
       )
         @rate = rate
@@ -110,6 +120,7 @@ module Hanikamu
         @method = method
         @key_prefix = key_prefix
         @override_key = override_key&.to_s
+        @adaptive_state = adaptive_state
         @check_interval = resolve_config_value(check_interval, :check_interval)
         @max_wait_time = resolve_config_value(max_wait_time, :max_wait_time)
         @block = block
@@ -173,12 +184,16 @@ module Hanikamu
       end
 
       # Redis key for the sliding window sorted set.
-      # Format: "<key_prefix>:<rate>:<interval>" — ensures different rate/interval
-      # configs don't collide even if they share a prefix.
+      # For adaptive limits the rate is excluded because it changes at runtime;
+      # for fixed limits it is included to isolate different configurations.
       def redis_key
         @redis_key ||= begin
           prefix = @key_prefix || "#{KEY_PREFIX}:#{@klass_name}:#{@method}"
-          "#{prefix}:#{@rate}:#{@interval}"
+          if @adaptive_state
+            "#{prefix}:#{@interval}"
+          else
+            "#{prefix}:#{@rate}:#{@interval}"
+          end
         end
       end
 
@@ -207,7 +222,7 @@ module Hanikamu
       # Uses EVALSHA for efficiency; falls back to SCRIPT LOAD + retry on NOSCRIPT
       # (happens after Redis restarts or script cache eviction).
       def eval_script(now, member)
-        redis.evalsha(lua_sha, keys: redis_keys, argv: [now, @interval, @rate, member])
+        redis.evalsha(lua_sha, keys: redis_keys, argv: [now, @interval, effective_rate, member])
       rescue Redis::CommandError => e
         return reload_script_and_retry(now, member) if e.message.include?("NOSCRIPT")
 
@@ -216,7 +231,7 @@ module Hanikamu
 
       def reload_script_and_retry(now, member)
         @lua_sha = redis.script(:load, LUA_SCRIPT)
-        redis.evalsha(lua_sha, keys: redis_keys, argv: [now, @interval, @rate, member])
+        redis.evalsha(lua_sha, keys: redis_keys, argv: [now, @interval, effective_rate, member])
       end
 
       # Sleeps for the shorter of check_interval and the jittered sleep_time.
@@ -266,6 +281,12 @@ module Hanikamu
 
       def current_time
         Time.now.to_f
+      end
+
+      # For adaptive limits, reads the current rate from the AdaptiveState
+      # (backed by Redis with local caching). For fixed limits, returns @rate.
+      def effective_rate
+        @adaptive_state ? @adaptive_state.current_rate : @rate
       end
 
       # Thread-local strategy takes precedence over global config.
