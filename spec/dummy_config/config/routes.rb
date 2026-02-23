@@ -5,5 +5,7 @@ Rails.application.routes.draw do
 
   mount Hanikamu::RateLimit::UI::Engine => "/rate-limits"
 
+  get "api/data" => "api#data"
+
   get "up" => "rails/health#show", as: :rails_health_check
 end
